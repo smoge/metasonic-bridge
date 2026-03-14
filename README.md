@@ -2,10 +2,11 @@
 
 `metasonic-bridge` is an experimental project exploring a hybrid architecture for modular audio synthesis.
 
-It separates two concerns that most audio environments mix together:
+It separates concerns that most audio environments mix together:
 
 * graph construction and scheduling
 * real-time signal processing
+
 
 In this system:
 
@@ -20,6 +21,7 @@ Haskell DSL → Graph IR → C++ Runtime Engine → DSP Processing
 
 It contains a minimal working implementation of that idea.
 
+This architecture will eventually enable **future** optimizations such as UGen (kernel) fusion, where chains of nodes can be compiled into a single processing loop to reduce intermediate buffers and improve performance. That is not implemented here.
 
 ---
 
