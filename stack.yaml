@@ -1,0 +1,4 @@
+snapshot: lts-24.33
+
+packages:
+  - .

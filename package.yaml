@@ -1,0 +1,37 @@
+name: metasonic-bridge
+version: 0.1.0.0
+license: GPL-3.0-only
+author: Bernardo Barros
+maintainer: bernardo@example.com
+copyright: "2026 Bernardo Barros"
+synopsis: Haskell graph compiler for the MetaSonic RT engine
+category: Audio
+
+dependencies:
+  - base >= 4.14 && < 5
+  - containers
+  - mtl
+
+ghc-options:
+  - -Wall
+
+executables:
+  metasonic-bridge:
+    main: Main.hs
+    source-dirs:
+      - app
+
+    c-sources:
+      - cbits/rt_graph.cpp
+
+    include-dirs:
+      - cbits
+
+    ghc-options:
+      - -O2
+
+    extra-libraries:
+      - stdc++
+
+    cc-options:
+      - -std=c++20
