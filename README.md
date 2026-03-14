@@ -33,7 +33,10 @@ Most modular audio environments blur several responsibilities into a single syst
 * UI
 * memory management
 
-Examples include SuperCollider, Pure Data, Max, and plugin frameworks.
+Displaimer: some systems — especially **SuperCollider** — already separate language-side composition from real-time DSP execution through a client/server architecture.
+
+
+Displaimer: some systems — especially **SuperCollider** — already separate language-side composition from real-time DSP execution through a client/server architecture.
 
 These systems are excellent, but they also come with some trade-offs between:
 
@@ -41,16 +44,18 @@ These systems are excellent, but they also come with some trade-offs between:
 * predictable real-time execution
 * maintainability
 
-MetaSonic explores a different approach:
+
+MetaSonic/TinySynth explores a slightly different emphasis:
 
 ```
 graph composition ≠ signal processing
 ```
 
-Graph construction can be treated as a compiler problem, while DSP execution
-remains a runtime problem.
+The idea is to treat graph construction and analysis as a _compiler problem_
+with an explicit intermediate representation (IR), while DSP execution remains
+a _runtime problem_.
 
-This separation enables:
+This separation aims to enable:
 
 * expressive graph composition
 * graph analysis and transformation
