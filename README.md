@@ -1,4 +1,4 @@
-# MetaSonic Bridge
+ # MetaSonic Bridge
 
 `metasonic-bridge` is an experimental project exploring a hybrid architecture for modular audio synthesis.
 
@@ -25,7 +25,8 @@ It contains a minimal working implementation of that idea.
 
 # Motivation
 
-Most modular audio environments blur several responsibilities into a single system:
+Many modular audio environments combine several responsibilities within the same programming model:
+
 
 * graph composition
 * scheduling
@@ -33,10 +34,7 @@ Most modular audio environments blur several responsibilities into a single syst
 * UI
 * memory management
 
-Displaimer: some systems — especially **SuperCollider** — already separate language-side composition from real-time DSP execution through a client/server architecture.
-
-
-Displaimer: some systems — especially **SuperCollider** — already separate language-side composition from real-time DSP execution through a client/server architecture.
+Some systems — especially SuperCollider — already separate language-side composition from real-time DSP execution.
 
 These systems are excellent, but they also come with some trade-offs between:
 
@@ -44,18 +42,16 @@ These systems are excellent, but they also come with some trade-offs between:
 * predictable real-time execution
 * maintainability
 
-
-MetaSonic/TinySynth explores a slightly different emphasis:
+MetaSonic explores a different approach:
 
 ```
 graph composition ≠ signal processing
 ```
 
-The idea is to treat graph construction and analysis as a _compiler problem_
-with an explicit intermediate representation (IR), while DSP execution remains
-a _runtime problem_.
+Graph construction can be treated as a compiler problem, while DSP execution
+remains a runtime problem.
 
-This separation aims to enable:
+This separation enables:
 
 * expressive graph composition
 * graph analysis and transformation
@@ -252,7 +248,6 @@ Each stage can evolve independently.
 
 Functional languages are particularly well suited for graph construction.
 Advantages include:
-
 
 * algebraic data types for graph representation
 * pattern matching for transformations
