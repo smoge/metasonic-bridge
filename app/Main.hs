@@ -4,18 +4,18 @@
 module Main where
 
 -- foldM is used for graph traversal algorithms
-import Control.Monad (foldM)
+import           Control.Monad              (foldM)
 -- State monad to build graphs in a functional DSL style
-import Control.Monad.State.Strict
--- State monad to build graphs in a functional DSL style
-import Data.Int (Int32)
+import           Control.Monad.State.Strict
+-- Fixed-width integer type for node identifiers
+import           Data.Int                   (Int32)
 -- Map to store nodes by NodeID
-import qualified Data.Map.Strict as M
+import qualified Data.Map.Strict            as M
 -- for cycle detection during graph traversal
-import qualified Data.Set as S
--- FFI types
-import Foreign (Int32, Ptr)
-import Foreign.C.Types
+import qualified Data.Set                   as S
+
+import           Foreign
+import           Foreign.C.Types
 
 ------------------------------------------------------------
 -- Graph identifiers
@@ -52,7 +52,7 @@ data UGen
 
 -- A named node inside the Haskell graph.
 data NodeSpec = NodeSpec
-  { nsID :: NodeID,
+  { nsID   :: NodeID,
     nsName :: String,
     nsUgen :: UGen
   }
@@ -67,7 +67,7 @@ data SynthGraph = SynthGraph
 -- State used while building graphs in the DSL.
 data SynthState = SynthState
   { ssNextID :: Int32,
-    ssGraph :: SynthGraph
+    ssGraph  :: SynthGraph
   }
   deriving (Eq, Show)
 
@@ -104,7 +104,7 @@ sinOsc :: Float -> Float -> SynthM NodeID
 sinOsc freq phase =
   insertNode "sinOsc" (SinOsc (Param freq) (Param phase))
 
--- DSL constructor: output signal
+-- DSL constructor: output node
 out :: Int -> NodeID -> SynthM NodeID
 out bus src =
   insertNode "out" (Out bus (Audio src 0))
@@ -115,11 +115,11 @@ out bus src =
 dependencies :: UGen -> [NodeID]
 dependencies u = case u of
   SinOsc a b -> deps [a, b]
-  Out _ a -> deps [a]
+  Out _ a    -> deps [a]
   where
     deps = foldr step []
     step (Audio nid _) acc = nid : acc
-    step (Param _) acc = acc
+    step (Param _) acc     = acc
 
 -- Validate that all dependencies exist and that the graph is acyclic
 validateGraph :: SynthGraph -> Either String ()
@@ -183,16 +183,16 @@ data InputConn
 
 -- Runtime node description sent to C++
 data NodeIR = NodeIR
-  { irNodeID :: NodeID,
-    irKind :: NodeKind,
-    irInputs :: [InputConn],
+  { irNodeID   :: NodeID,
+    irKind     :: NodeKind,
+    irInputs   :: [InputConn],
     irControls :: [Float]
   }
   deriving (Eq, Show)
 
 -- Lowered graph: node inventory with execution order
 data GraphIR = GraphIR
-  { giNodes :: [NodeIR],
+  { giNodes     :: [NodeIR],
     giExecOrder :: [NodeID]
   }
   deriving (Eq, Show)
@@ -218,10 +218,10 @@ lowerNode spec =
   where
     lowerConn c = case c of
       Audio nid port -> FromNode nid port
-      Param x -> Const x
+      Param x        -> Const x
 
     connDefault c = case c of
-      Param x -> x
+      Param x   -> x
       Audio _ _ -> 0.0
 
 -- Validate, sort, and lower the (haskell-side) graph
@@ -262,13 +262,13 @@ foreign import ccall unsafe "rt_graph_set_exec_order"
 foreign import ccall unsafe "rt_graph_process"
   c_rt_graph_process :: Ptr RTGraph -> CInt -> IO ()
 
--- Convert Haskell node kinds into the integer tags expected by C+
+-- Convert Haskell node kinds into the integer tags expected by C++
 kindTag :: NodeKind -> CInt
 kindTag KSinOsc = 1
-kindTag KOut = 2
+kindTag KOut    = 2
 
--- Materialize the lowered graph inside the C++ runtime
--- clear graph, add nodes, set schedule... then wire connections
+-- Materialize the lowered graph inside the C++ runtime:
+-- clear graph, add nodes, set execution order, then wire connections.
 compileGraph :: Ptr RTGraph -> GraphIR -> IO ()
 compileGraph g ir = do
   c_rt_graph_clear g
