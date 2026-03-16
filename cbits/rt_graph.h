@@ -4,38 +4,41 @@
 extern "C" {
 #endif
 
-// forward declaration of RTGraph structure
+// opaque runtime graph handle used through the C ABI
 struct RTGraph;
 
-// create new real-time graph with capacity and maximum number of frames
-// returns pointer to the newly created RTGraph instance.
+// create a new runtime graph
+//
+// capacity   - advisory node capacity, used to reserve storage
+// max_frames - maximum block size accepted by rt_graph_process()
 RTGraph *rt_graph_create(int capacity, int max_frames);
 
-// destroy an existing RTGraph instance, freeing allocated resources
+// destroy the graph and all owned resources
 void rt_graph_destroy(RTGraph *g);
 
-// clear all nodes and connections in the given RTGraph, resetting it
+// remove all nodes and reset runtime state.
 void rt_graph_clear(RTGraph *g);
 
-// add a new node to the RTGraph with specified node ID and kind/type
-void rt_graph_add_node(RTGraph *g, int node_id, int node_kind);
+// add one node to the graph at a dense runtime index.
+// Nodes are expected to be added in execution order. The runtime processes them
+// in storage order, so there is no separate execution-order API anymore
+//
+// node_kind currently supports:
+//   1 = SinOsc
+//   2 = Out
+void rt_graph_add_node(RTGraph *g, int node_index, int node_kind);
 
-// set a control parameter for specific node in the RTGraph
-// control is identified by its index, value is a floating-point number
-void rt_graph_set_control(RTGraph *g, int node_id, int control_index,
+// set one control value on a node
+void rt_graph_set_control(RTGraph *g, int node_index, int control_index,
                           float value);
 
-// connect two nodes in the RTGraph
-// specifies the source node and port, also as the destination node and port
-void rt_graph_connect(RTGraph *g, int src_id, int src_port, int dst_id,
+// connect one source output port to one destination input port
+// src_index and dst_index are dense runtime indices, not symbolic node ids
+void rt_graph_connect(RTGraph *g, int src_index, int src_port, int dst_index,
                       int dst_port);
 
-// set the execution order of nodes in the RTGraph
-// determines the sequence in which nodes are processed
-void rt_graph_set_exec_order(RTGraph *g, int order_index, int node_id);
-
-// process the RTGraph for a specified number of frames
-// this typically involves executing the nodes in the defined order
+// process one audio block
+// nframes must be between 0 and max_frames inclusive
 void rt_graph_process(RTGraph *g, int nframes);
 
 #ifdef __cplusplus

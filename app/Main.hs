@@ -1,95 +1,118 @@
+{-# LANGUAGE BangPatterns               #-}
+{-# LANGUAGE DeriveAnyClass             #-}
+{-# LANGUAGE DeriveGeneric              #-}
+{-# LANGUAGE DerivingStrategies         #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
 {-# OPTIONS_GHC -Wno-unused-imports #-}
 
 module Main where
 
--- foldM is used for graph traversal algorithms
-import           Control.Monad              (foldM)
--- State monad to build graphs in a functional DSL style
+import           Control.DeepSeq
+import           Control.Exception          (bracket, evaluate)
+import           Control.Monad              (foldM, forM_)
 import           Control.Monad.State.Strict
--- Fixed-width integer type for node identifiers
-import           Data.Int                   (Int32)
--- Map to store nodes by NodeID
+import           Data.List
 import qualified Data.Map.Strict            as M
--- for cycle detection during graph traversal
 import qualified Data.Set                   as S
-
 import           Foreign
 import           Foreign.C.Types
+import           GHC.Generics               (Generic)
+
+
 
 ------------------------------------------------------------
--- Graph identifiers
+-- Strong identifiers on the Haskell side
 ------------------------------------------------------------
 
--- NodeID is a strongly typed identifier for nodes in the graph. Uses Int32 to
--- match the C side
-newtype NodeID = NodeID Int32
-  deriving (Eq, Ord, Show, Num)
+newtype NodeID = NodeID Int
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving newtype (NFData)
+
+newtype NodeIndex = NodeIndex Int
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving newtype (NFData)
+
+newtype PortIndex = PortIndex Int
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving newtype (NFData)
+
+newtype ControlIndex = ControlIndex Int
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving newtype (NFData)
+
 
 ------------------------------------------------------------
--- Node kinds
+-- Runtime node kinds
 ------------------------------------------------------------
 
--- Runtime node kinds understood by the C++ engine
 data NodeKind
   = KSinOsc
   | KOut
-  deriving (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFData)
 
--- High-level connection model:
---   Audio nid port = take signal from another node output
---   Param x        = constant parameter value
+
+kindTag :: NodeKind -> CInt
+kindTag KSinOsc = 1
+kindTag KOut    = 2
+
+------------------------------------------------------------
+-- High-level DSL
+------------------------------------------------------------
+
 data Connection
-  = Audio NodeID Int
-  | Param Float
-  deriving (Eq, Show)
+  = Audio !NodeID !PortIndex
+  | Param !Float
+  deriving (Eq, Show, Generic, NFData)
 
--- DSL-level node descriptions.
 data UGen
-  = SinOsc Connection Connection -- freq, phase
-  | Out Int Connection -- bus, input
-  deriving (Eq, Show)
+  = SinOsc !Connection !Connection -- freq, phase
+  | Out !Int !Connection           -- bus, input
+  deriving (Eq, Show, Generic, NFData)
 
--- A named node inside the Haskell graph.
 data NodeSpec = NodeSpec
-  { nsID   :: NodeID,
-    nsName :: String,
-    nsUgen :: UGen
+  { nsID   :: !NodeID
+  , nsName :: !String
+  , nsUgen :: !UGen
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
--- The graph is stored as a map from NodeID to node specification.
 data SynthGraph = SynthGraph
-  { sgNodes :: M.Map NodeID NodeSpec
+  { sgNodes :: !(M.Map NodeID NodeSpec)
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
--- State used while building graphs in the DSL.
+
 data SynthState = SynthState
-  { ssNextID :: Int32,
-    ssGraph  :: SynthGraph
+  { ssNextID :: !Int
+  , ssGraph  :: !SynthGraph
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
 type SynthM a = State SynthState a
 
 emptyGraph :: SynthGraph
 emptyGraph = SynthGraph M.empty
 
--- Run the DSL and extract the final graph
 runSynth :: SynthM a -> SynthGraph
 runSynth m = ssGraph (execState m (SynthState 0 emptyGraph))
 
--- Allocate a new node id by incrementing the next ID counter in the state.
+-- freshNodeID :: SynthM NodeID
+-- freshNodeID = do
+--   st <- get
+--   let n = ssNextID st
+--   put st {ssNextID = n + 1}
+--   pure (NodeID n)
+
 freshNodeID :: SynthM NodeID
 freshNodeID = do
   st <- get
-  let n = ssNextID st
-  put st {ssNextID = n + 1}
+  let !n  = ssNextID st
+      !n' = n + 1
+  put st { ssNextID = n' }
   pure (NodeID n)
 
--- Insert a node into the graph under construction with a given name and UGen,
--- returning its NodeID
 insertNode :: String -> UGen -> SynthM NodeID
 insertNode name ugen = do
   nid <- freshNodeID
@@ -99,19 +122,18 @@ insertNode name ugen = do
   put st {ssGraph = graph {sgNodes = M.insert nid spec (sgNodes graph)}}
   pure nid
 
--- DSL constructor: sine oscillator with constant freq and phase
 sinOsc :: Float -> Float -> SynthM NodeID
 sinOsc freq phase =
   insertNode "sinOsc" (SinOsc (Param freq) (Param phase))
 
--- DSL constructor: output node
 out :: Int -> NodeID -> SynthM NodeID
 out bus src =
-  insertNode "out" (Out bus (Audio src 0))
+  insertNode "out" (Out bus (Audio src (PortIndex 0)))
 
+------------------------------------------------------------
+-- Validation and topological ordering
+------------------------------------------------------------
 
--- Collect upstream dependencies from a node only audio connections create graph
--- dependencies, params are just constants (for now)
 dependencies :: UGen -> [NodeID]
 dependencies u = case u of
   SinOsc a b -> deps [a, b]
@@ -121,7 +143,6 @@ dependencies u = case u of
     step (Audio nid _) acc = nid : acc
     step (Param _) acc     = acc
 
--- Validate that all dependencies exist and that the graph is acyclic
 validateGraph :: SynthGraph -> Either String ()
 validateGraph g = do
   mapM_ validateNode (M.elems (sgNodes g))
@@ -135,10 +156,8 @@ validateGraph g = do
 
     checkDep nid
       | exists nid = Right ()
-      | otherwise = Left ("Missing dependency: " ++ show nid)
+      | otherwise  = Left ("Missing dependency: " ++ show nid)
 
--- Topological sort with cycle detection
--- Produces the execution order expected by the runtime engine
 topoSort :: SynthGraph -> Either String [NodeID]
 topoSort g = do
   (_, _, order) <- foldM step (S.empty, S.empty, []) (M.keys (sgNodes g))
@@ -175,45 +194,45 @@ topoSort g = do
                   permFinal = S.insert nid perm'
               pure (tempFinal, permFinal, nid : acc')
 
--- Lowered input connections for the runtime IR
+------------------------------------------------------------
+-- Symbolic IR (still uses NodeID)
+------------------------------------------------------------
+
 data InputConn
-  = FromNode NodeID Int
-  | Const Float
-  deriving (Eq, Show)
+  = FromNode !NodeID !PortIndex
+  | Const !Float
+  deriving (Eq, Show, Generic, NFData)
 
--- Runtime node description sent to C++
 data NodeIR = NodeIR
-  { irNodeID   :: NodeID,
-    irKind     :: NodeKind,
-    irInputs   :: [InputConn],
-    irControls :: [Float]
+  { irNodeID   :: !NodeID
+  , irKind     :: !NodeKind
+  , irInputs   :: ![InputConn]
+  , irControls :: ![Float]
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
--- Lowered graph: node inventory with execution order
 data GraphIR = GraphIR
-  { giNodes     :: [NodeIR],
-    giExecOrder :: [NodeID]
+  { giNodes     :: ![NodeIR]
+  , giExecOrder :: ![NodeID]
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic, NFData)
 
--- Lower a DSL node into a simpler runtime IR
 lowerNode :: NodeSpec -> NodeIR
 lowerNode spec =
   case nsUgen spec of
     SinOsc freq phase ->
       NodeIR
-        { irNodeID = nsID spec,
-          irKind = KSinOsc,
-          irInputs = map lowerConn [freq, phase],
-          irControls = [connDefault freq, connDefault phase]
+        { irNodeID = nsID spec
+        , irKind = KSinOsc
+        , irInputs = map lowerConn [freq, phase]
+        , irControls = [connDefault freq, connDefault phase]
         }
     Out bus input ->
       NodeIR
-        { irNodeID = nsID spec,
-          irKind = KOut,
-          irInputs = [lowerConn input],
-          irControls = [fromIntegral bus]
+        { irNodeID = nsID spec
+        , irKind = KOut
+        , irInputs = [lowerConn input]
+        , irControls = [fromIntegral bus]
         }
   where
     lowerConn c = case c of
@@ -224,18 +243,89 @@ lowerNode spec =
       Param x   -> x
       Audio _ _ -> 0.0
 
--- Validate, sort, and lower the (haskell-side) graph
 lowerGraph :: SynthGraph -> Either String GraphIR
 lowerGraph g = do
   validateGraph g
   order <- topoSort g
-  pure
-    GraphIR
-      { giNodes = map lowerNode (M.elems (sgNodes g)),
-        giExecOrder = order
-      }
+  pure GraphIR
+    { giNodes = map lowerNode (M.elems (sgNodes g))
+    , giExecOrder = order
+    }
 
--- Opaque runtime graph handle owned by C++
+------------------------------------------------------------
+-- Compiled runtime graph (dense NodeIndex, no symbolic lookups at runtime)
+------------------------------------------------------------
+
+data RuntimeInput
+  = RFrom !NodeIndex !PortIndex
+  | RConst !Float
+  deriving (Eq, Show, Generic, NFData)
+
+data RuntimeNode = RuntimeNode
+  { rnIndex      :: !NodeIndex
+  , rnOriginalID :: !NodeID
+  , rnKind       :: !NodeKind
+  , rnInputs     :: ![RuntimeInput]
+  , rnControls   :: ![Float]
+  }
+  deriving (Eq, Show, Generic, NFData)
+
+
+data RuntimeGraph = RuntimeGraph
+  { rgNodes :: ![RuntimeNode]
+  }
+  deriving (Eq, Show, Generic, NFData)
+
+compileRuntimeGraph :: GraphIR -> Either String RuntimeGraph
+compileRuntimeGraph ir = do
+  let !execOrder = giExecOrder ir
+      !indexMap =
+        M.fromList (zipWith (\i nid -> (nid, NodeIndex i)) [0..] execOrder)
+      !nodeMap =
+        M.fromList [(irNodeID n, n) | n <- giNodes ir]
+      indexedOrder =
+        zipWith (\i nid -> (NodeIndex i, nid)) [0..] execOrder
+
+  nodes <- mapM (compileNode indexMap nodeMap) indexedOrder
+  let !rg = RuntimeGraph nodes
+  pure rg
+  where
+    compileNode indexMap nodeMap (ix, nid) = do
+      node <-
+        maybe
+          (Left ("Missing node in compileRuntimeGraph: " ++ show nid))
+          Right
+          (M.lookup nid nodeMap)
+
+      inputs <- mapM (compileInput indexMap) (irInputs node)
+
+      let !rtNode = RuntimeNode
+            { rnIndex      = ix
+            , rnOriginalID = nid
+            , rnKind       = irKind node
+            , rnInputs     = inputs
+            , rnControls   = irControls node
+            }
+      pure rtNode
+
+    compileInput indexMap inp =
+      case inp of
+        Const x ->
+          Right (RConst x)
+
+        FromNode src port ->
+          case M.lookup src indexMap of
+            Nothing ->
+              Left ("Missing runtime index for source node " ++ show src)
+            Just ix ->
+              Right (RFrom ix port)
+
+
+
+------------------------------------------------------------
+-- FFI layer
+------------------------------------------------------------
+
 data RTGraph
 
 foreign import ccall unsafe "rt_graph_create"
@@ -256,56 +346,52 @@ foreign import ccall unsafe "rt_graph_set_control"
 foreign import ccall unsafe "rt_graph_connect"
   c_rt_graph_connect :: Ptr RTGraph -> CInt -> CInt -> CInt -> CInt -> IO ()
 
-foreign import ccall unsafe "rt_graph_set_exec_order"
-  c_rt_graph_set_exec_order :: Ptr RTGraph -> CInt -> CInt -> IO ()
-
 foreign import ccall unsafe "rt_graph_process"
   c_rt_graph_process :: Ptr RTGraph -> CInt -> IO ()
 
--- Convert Haskell node kinds into the integer tags expected by C++
-kindTag :: NodeKind -> CInt
-kindTag KSinOsc = 1
-kindTag KOut    = 2
+withRTGraph :: Int -> Int -> (Ptr RTGraph -> IO a) -> IO a
+withRTGraph capacity maxFrames =
+  bracket
+    (c_rt_graph_create (fromIntegral capacity) (fromIntegral maxFrames))
+    c_rt_graph_destroy
 
--- Materialize the lowered graph inside the C++ runtime:
--- clear graph, add nodes, set execution order, then wire connections.
-compileGraph :: Ptr RTGraph -> GraphIR -> IO ()
-compileGraph g ir = do
+cNodeIndex :: NodeIndex -> CInt
+cNodeIndex (NodeIndex x) = fromIntegral x
+
+cPortIndex :: PortIndex -> CInt
+cPortIndex (PortIndex x) = fromIntegral x
+
+cControlIndex :: ControlIndex -> CInt
+cControlIndex (ControlIndex x) = fromIntegral x
+
+loadRuntimeGraph :: Ptr RTGraph -> RuntimeGraph -> IO ()
+loadRuntimeGraph g rg = do
   c_rt_graph_clear g
-
-  mapM_ addNode (giNodes ir)
-  mapM_ setNodeOrder (zip [0 :: Int ..] (giExecOrder ir))
-  mapM_ wireNode (giNodes ir)
+  mapM_ addNode (rgNodes rg)
+  mapM_ wireNode (rgNodes rg)
   where
     addNode node = do
-      let NodeID nid = irNodeID node
-      c_rt_graph_add_node g (fromIntegral nid) (kindTag $ irKind node)
-      mapM_
-        ( \(i, v) ->
-            c_rt_graph_set_control g (fromIntegral nid) (fromIntegral i) (CFloat v)
-        )
-        (zip [0 :: Int ..] (irControls node))
+      c_rt_graph_add_node g (cNodeIndex (rnIndex node)) (kindTag (rnKind node))
+      forM_ (zipWith (\i v -> (ControlIndex i, v)) [0 ..] (rnControls node)) $ \(ci, v) ->
+        c_rt_graph_set_control g (cNodeIndex (rnIndex node)) (cControlIndex ci) (CFloat v)
 
-    setNodeOrder (i, NodeID nid) =
-      c_rt_graph_set_exec_order g (fromIntegral i) (fromIntegral nid)
+    wireNode node =
+      forM_ (zipWith (\i inp -> (PortIndex i, inp)) [0 ..] (rnInputs node)) $ \(dstPort, inp) ->
+        case inp of
+          RFrom src srcPort ->
+            c_rt_graph_connect
+              g
+              (cNodeIndex src)
+              (cPortIndex srcPort)
+              (cNodeIndex (rnIndex node))
+              (cPortIndex dstPort)
+          RConst _ ->
+            pure ()
 
-    wireNode node = do
-      let NodeID dst = irNodeID node
-      mapM_ (wireInput dst) (zip [0 :: Int ..] (irInputs node))
+------------------------------------------------------------
+-- Demo
+------------------------------------------------------------
 
-    wireInput dst (dstPort, conn) =
-      case conn of
-        FromNode (NodeID src) srcPort ->
-          c_rt_graph_connect
-            g
-            (fromIntegral src)
-            (fromIntegral srcPort)
-            (fromIntegral dst)
-            (fromIntegral dstPort)
-        Const _ ->
-          pure ()
-
--- Minimal example demo graph
 simpleGraph :: SynthGraph
 simpleGraph = runSynth $ do
   osc <- sinOsc 440.0 0.0
@@ -318,20 +404,26 @@ main = do
 
   case lowerGraph simpleGraph of
     Left err -> putStrLn ("Lowering error: " ++ err)
-    Right ir -> do
-      putStrLn "Lowered IR:"
+    Right ir0 -> do
+      ir <- evaluate (force ir0)
+      putStrLn "Lowered symbolic IR:"
       print ir
 
-      rt <- c_rt_graph_create 16 64
-      compileGraph rt ir
+      case compileRuntimeGraph ir of
+        Left err -> putStrLn ("Runtime compilation error: " ++ err)
+        Right rg0 -> do
+          rg <- evaluate (force rg0)
+          putStrLn "Compiled runtime graph:"
+          print rg
 
-      putStrLn "Processing 3 blocks in C++..."
-      mapM_
-        ( \n -> do
-            putStrLn ("Block " ++ show n)
-            c_rt_graph_process rt 64
-        )
-        [1 :: Int .. 3]
+          withRTGraph 16 64 $ \rt -> do
+            loadRuntimeGraph rt rg
 
-      c_rt_graph_destroy rt
-      putStrLn "Done."
+            putStrLn "Processing 3 blocks in C++..."
+            mapM_
+              (\n -> do
+                  putStrLn ("Block " ++ show n)
+                  c_rt_graph_process rt 64)
+              [1 :: Int .. 3]
+
+          putStrLn "Done."

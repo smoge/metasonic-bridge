@@ -11,6 +11,7 @@ dependencies:
   - base >= 4.14 && < 5
   - containers
   - mtl
+  - deepseq
 
 ghc-options:
   - -Wall
@@ -21,7 +22,7 @@ executables:
     source-dirs:
       - app
 
-    c-sources:
+    cxx-sources:
       - cbits/rt_graph.cpp
 
     include-dirs:
@@ -33,5 +34,5 @@ executables:
     extra-libraries:
       - stdc++
 
-    cc-options:
+    cxx-options:
       - -std=c++20

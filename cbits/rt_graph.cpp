@@ -3,262 +3,335 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <memory>
-#include <unordered_map>
+#include <numbers>
+#include <span>
 #include <vector>
 
 namespace {
 
-// Const for sample rate
 constexpr float kSampleRate = 48000.0f;
 
-// struct representing a reference to an input connection
+struct NodeIndex {
+  int value = -1;
+};
+
+struct PortIndex {
+  int value = -1;
+};
+
+struct ControlIndex {
+  int value = -1;
+};
+
+[[nodiscard]] constexpr bool valid(NodeIndex x) noexcept { return x.value >= 0; }
+[[nodiscard]] constexpr bool valid(PortIndex x) noexcept { return x.value >= 0; }
+[[nodiscard]] constexpr bool valid(ControlIndex x) noexcept {
+  return x.value >= 0;
+}
+
+[[nodiscard]] constexpr std::size_t to_size(NodeIndex x) noexcept {
+  return static_cast<std::size_t>(x.value);
+}
+[[nodiscard]] constexpr std::size_t to_size(PortIndex x) noexcept {
+  return static_cast<std::size_t>(x.value);
+}
+[[nodiscard]] constexpr std::size_t to_size(ControlIndex x) noexcept {
+  return static_cast<std::size_t>(x.value);
+}
+
+enum class NodeKind : int {
+  SinOsc = 1,
+  Out = 2,
+};
+
 struct InputRef {
-  int src_node = -1;      // id of the source node
-  int src_port = -1;      // port index on the source node
-  bool connected = false; // true if the input is connected
+  NodeIndex src_node{};
+  PortIndex src_port{};
+  bool connected = false;
 };
 
-// base struct for nodes in the graph
-struct Node {
-  int id = -1;                             // unique identifier for the node
-  std::vector<float> controls;             // control parameters for the node
-  std::vector<InputRef> input_refs;        // references to input connections
-  std::vector<std::vector<float>> outputs; // output buffers for the node
-
-  explicit Node(int node_id) : id(node_id) {}
-  virtual ~Node() = default;
-
-  // pure virtual function to process audio for the node
-  virtual void process(
-      int nframes,
-      const std::unordered_map<int, std::unique_ptr<Node>> &nodes) noexcept = 0;
-
-  // resolves and returns the input buffer for a index
-  const float *
-  resolve_input(std::size_t idx,
-                const std::unordered_map<int, std::unique_ptr<Node>> &nodes)
-      const noexcept {
-    if (idx >= input_refs.size())
-      return nullptr;
-
-    const InputRef &ref = input_refs[idx];
-    if (!ref.connected)
-      return nullptr;
-
-    auto it = nodes.find(ref.src_node);
-    if (it == nodes.end())
-      return nullptr;
-
-    const Node *src = it->second.get();
-    if (ref.src_port < 0)
-      return nullptr;
-
-    const std::size_t port = static_cast<std::size_t>(ref.src_port);
-    if (port >= src->outputs.size())
-      return nullptr;
-    if (src->outputs[port].empty())
-      return nullptr;
-
-    return src->outputs[port].data();
-  }
+struct SinOscState {
+  float phase = 0.0f;
+  bool phase_initialized = false;
 };
 
-// node representing a sine oscillator
-struct SinOscNode final : Node {
-  float phase = 0.0f;             // current phase of the oscillator
-  bool phase_initialized = false; // flag to check if phase is initialized
-
-  explicit SinOscNode(int node_id) : Node(node_id) {
-    controls.resize(
-        2, 0.0f);         // two control parameters: frequency and initial phase
-    input_refs.resize(2); // two inputs: frequency and phase
-    outputs.resize(1);    // one output: the generated sine wave
-  }
-
-  // processes the sine wave generation for a given number of frames
-  void process(int nframes, const std::unordered_map<int, std::unique_ptr<Node>>
-                                &nodes) noexcept override {
-    outputs[0].resize(static_cast<std::size_t>(nframes));
-
-    const float *freqIn = resolve_input(0, nodes);
-    const float *phaseIn = resolve_input(1, nodes);
-
-    const float freq = freqIn ? freqIn[0] : controls[0];
-    const float ph0 = phaseIn ? phaseIn[0] : controls[1];
-
-    if (!phase_initialized) {
-      phase = ph0;
-      phase_initialized = true;
-    }
-
-    const float inc = freq / kSampleRate;
-
-    for (int i = 0; i < nframes; ++i) {
-      outputs[0][static_cast<std::size_t>(i)] =
-          std::sin(2.0f * 3.14159265358979323846f * phase);
-      phase += inc;
-      if (phase >= 1.0f) {
-        phase -= std::floor(phase);
-      }
-    }
-  }
+struct NodeRuntime {
+  NodeKind kind = NodeKind::Out;
+  std::vector<float> controls;
+  std::vector<InputRef> input_refs;
+  std::vector<std::vector<float>> outputs;
+  SinOscState sinosc{};
 };
 
-// node representing an output node that passes through its input
-struct OutNode final : Node {
-  explicit OutNode(int node_id) : Node(node_id) {
-    controls.resize(1, 0.0f); // one control parameter
-    input_refs.resize(1);     // one input4
-    outputs.resize(1);        // one output
+[[nodiscard]] static std::span<float>
+output_span(NodeRuntime &node, PortIndex port, int nframes) noexcept {
+  return {node.outputs[to_size(port)].data(), static_cast<std::size_t>(nframes)};
+}
+
+[[nodiscard]] static std::span<const float>
+output_span(const NodeRuntime &node, PortIndex port, int nframes) noexcept {
+  return {node.outputs[to_size(port)].data(), static_cast<std::size_t>(nframes)};
+}
+
+[[nodiscard]] static std::span<const float>
+resolve_input(const std::vector<NodeRuntime> &nodes, const NodeRuntime &dst,
+              PortIndex input_index, int nframes) noexcept {
+  if (!valid(input_index)) {
+    return {};
   }
 
-  // processes the input and copies it to the output
-  void process(int nframes, const std::unordered_map<int, std::unique_ptr<Node>>
-                                &nodes) noexcept override {
-    outputs[0].resize(static_cast<std::size_t>(nframes));
-    const float *in = resolve_input(0, nodes);
+  const std::size_t idx = to_size(input_index);
+  if (idx >= dst.input_refs.size()) {
+    return {};
+  }
 
-    if (!in) {
-      std::fill(outputs[0].begin(), outputs[0].end(), 0.0f);
-      return;
-    }
+  const InputRef &ref = dst.input_refs[idx];
+  if (!ref.connected || !valid(ref.src_node) || !valid(ref.src_port)) {
+    return {};
+  }
 
-    for (int i = 0; i < nframes; ++i) {
-      outputs[0][static_cast<std::size_t>(i)] = in[i];
+  const std::size_t src_index = to_size(ref.src_node);
+  if (src_index >= nodes.size()) {
+    return {};
+  }
+
+  const NodeRuntime &src = nodes[src_index];
+  const std::size_t src_port = to_size(ref.src_port);
+  if (src_port >= src.outputs.size()) {
+    return {};
+  }
+
+  if (src.outputs[src_port].size() < static_cast<std::size_t>(nframes)) {
+    return {};
+  }
+
+  return output_span(src, ref.src_port, nframes);
+}
+
+static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
+  node.kind = kind;
+  node.controls.clear();
+  node.input_refs.clear();
+  node.outputs.clear();
+  node.sinosc = {};
+
+  switch (kind) {
+  case NodeKind::SinOsc:
+    node.controls.resize(2, 0.0f); // [freq, initial_phase]
+    node.input_refs.resize(2);     // [freq_in, phase_in]
+    node.outputs.resize(1);
+    break;
+
+  case NodeKind::Out:
+    node.controls.resize(1, 0.0f); // [bus]
+    node.input_refs.resize(1);     // [signal_in]
+    node.outputs.resize(1);
+    break;
+  }
+
+  for (auto &out : node.outputs) {
+    out.resize(static_cast<std::size_t>(max_frames), 0.0f);
+  }
+}
+
+static void process_sinosc(std::vector<NodeRuntime> &nodes, std::size_t node_idx,
+                           int nframes) noexcept {
+  NodeRuntime &node = nodes[node_idx];
+  auto out = output_span(node, PortIndex{0}, nframes);
+  const auto freq_in = resolve_input(nodes, node, PortIndex{0}, nframes);
+  const auto phase_in = resolve_input(nodes, node, PortIndex{1}, nframes);
+
+  // Preserves the current semantics: external inputs override controls at
+  // block rate using sample 0. The next architectural step after this one is
+  // to make selected inputs audio-rate.
+  const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
+  const float ph0 = !phase_in.empty() ? phase_in[0] : node.controls[1];
+
+  if (!node.sinosc.phase_initialized) {
+    node.sinosc.phase = ph0;
+    node.sinosc.phase_initialized = true;
+  }
+
+  constexpr float kTwoPi = 2.0f * std::numbers::pi_v<float>;
+  const float inc = freq / kSampleRate;
+
+  for (int i = 0; i < nframes; ++i) {
+    const std::size_t fi = static_cast<std::size_t>(i);
+    out[fi] = std::sin(kTwoPi * node.sinosc.phase);
+    node.sinosc.phase += inc;
+    if (node.sinosc.phase >= 1.0f) {
+      node.sinosc.phase -= std::floor(node.sinosc.phase);
     }
   }
-};
+}
+
+static void process_out(std::vector<NodeRuntime> &nodes, std::size_t node_idx,
+                        int nframes) noexcept {
+  NodeRuntime &node = nodes[node_idx];
+  auto out = output_span(node, PortIndex{0}, nframes);
+  const auto in = resolve_input(nodes, node, PortIndex{0}, nframes);
+
+  if (in.empty()) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
+  }
+
+  std::copy_n(in.begin(), static_cast<std::size_t>(nframes), out.begin());
+}
 
 } // namespace
 
-// struct representing the real-time graph
 struct RTGraph {
   int capacity = 0;
   int max_frames = 0;
-  std::unordered_map<int, std::unique_ptr<Node>> nodes;
-  std::vector<int> exec_order;
+  std::vector<NodeRuntime> nodes;
 };
 
-// helper function to lookup a node in the graph by ID
-static Node *lookup_node(RTGraph *g, int node_id) {
-  auto it = g->nodes.find(node_id);
-  if (it == g->nodes.end())
-    return nullptr;
-  return it->second.get();
+static void ensure_node_slot(RTGraph &g, NodeIndex node_index) {
+  if (!valid(node_index)) {
+    return;
+  }
+
+  const std::size_t idx = to_size(node_index);
+  if (g.nodes.size() <= idx) {
+    g.nodes.resize(idx + 1);
+  }
 }
 
 extern "C" {
 
-// a new RTGraph with specified capacity and max frames
 RTGraph *rt_graph_create(int capacity, int max_frames) {
   auto *g = new RTGraph{};
-  g->capacity = capacity;
-  g->max_frames = max_frames;
+  g->capacity = std::max(0, capacity);
+  g->max_frames = std::max(0, max_frames);
+  if (g->capacity > 0) {
+    g->nodes.reserve(static_cast<std::size_t>(g->capacity));
+  }
   return g;
 }
 
-// destroys the graph and frees memory
 void rt_graph_destroy(RTGraph *g) { delete g; }
 
-// clears all nodes in the graph, removing all nodes and execution order
 void rt_graph_clear(RTGraph *g) {
-  if (!g)
+  if (!g) {
     return;
+  }
   g->nodes.clear();
-  g->exec_order.clear();
+  if (g->capacity > 0) {
+    g->nodes.reserve(static_cast<std::size_t>(g->capacity));
+  }
 }
 
-// adds a new node to the graph (based on its kind) with the specified ID
-void rt_graph_add_node(RTGraph *g, int node_id, int node_kind) {
-  if (!g)
+void rt_graph_add_node(RTGraph *g, int node_index, int node_kind) {
+  if (!g) {
     return;
+  }
 
+  NodeKind kind{};
   switch (node_kind) {
   case 1:
-    g->nodes[node_id] = std::make_unique<SinOscNode>(node_id);
+    kind = NodeKind::SinOsc;
     break;
   case 2:
-    g->nodes[node_id] = std::make_unique<OutNode>(node_id);
+    kind = NodeKind::Out;
     break;
   default:
     std::fprintf(stderr, "Unknown node kind: %d\n", node_kind);
-    break;
+    return;
   }
+
+  const NodeIndex idx{node_index};
+  if (!valid(idx)) {
+    return;
+  }
+
+  ensure_node_slot(*g, idx);
+  configure_node(g->nodes[to_size(idx)], kind, g->max_frames);
 }
 
-// sets a control value for a specific node
-void rt_graph_set_control(RTGraph *g, int node_id, int control_index,
+void rt_graph_set_control(RTGraph *g, int node_index, int control_index,
                           float value) {
-  if (!g)
+  if (!g) {
     return;
+  }
 
-  Node *node = lookup_node(g, node_id);
-  if (!node)
+  const NodeIndex ni{node_index};
+  const ControlIndex ci{control_index};
+  if (!valid(ni) || !valid(ci)) {
     return;
-  if (control_index < 0)
-    return;
+  }
 
-  const std::size_t idx = static_cast<std::size_t>(control_index);
-  if (idx >= node->controls.size())
+  const std::size_t nidx = to_size(ni);
+  if (nidx >= g->nodes.size()) {
     return;
+  }
 
-  node->controls[idx] = value;
+  NodeRuntime &node = g->nodes[nidx];
+  const std::size_t cidx = to_size(ci);
+  if (cidx >= node.controls.size()) {
+    return;
+  }
+
+  node.controls[cidx] = value;
 }
 
-// connects two nodes within the graph
-void rt_graph_connect(RTGraph *g, int src_id, int src_port, int dst_id,
+void rt_graph_connect(RTGraph *g, int src_index, int src_port, int dst_index,
                       int dst_port) {
-  if (!g)
+  if (!g) {
     return;
-
-  Node *dst = lookup_node(g, dst_id);
-  if (!dst)
-    return;
-  if (dst_port < 0)
-    return;
-
-  const std::size_t dp = static_cast<std::size_t>(dst_port);
-  if (dp >= dst->input_refs.size())
-    return;
-
-  dst->input_refs[dp] = InputRef{src_id, src_port, true};
-}
-
-// sets the execution order for nodes in the graph
-void rt_graph_set_exec_order(RTGraph *g, int order_index, int node_id) {
-  if (!g)
-    return;
-  if (order_index < 0)
-    return;
-
-  const std::size_t idx = static_cast<std::size_t>(order_index);
-  if (g->exec_order.size() <= idx) {
-    g->exec_order.resize(idx + 1, -1);
   }
-  g->exec_order[idx] = node_id;
+
+  const NodeIndex src{src_index};
+  const PortIndex sp{src_port};
+  const NodeIndex dst{dst_index};
+  const PortIndex dp{dst_port};
+  if (!valid(src) || !valid(sp) || !valid(dst) || !valid(dp)) {
+    return;
+  }
+
+  const std::size_t sidx = to_size(src);
+  const std::size_t didx = to_size(dst);
+  const std::size_t dport = to_size(dp);
+
+  if (sidx >= g->nodes.size() || didx >= g->nodes.size()) {
+    return;
+  }
+
+  NodeRuntime &dst_node = g->nodes[didx];
+  if (dport >= dst_node.input_refs.size()) {
+    return;
+  }
+
+  dst_node.input_refs[dport] = InputRef{src, sp, true};
 }
 
-// processes the graph for a given number of frames
 void rt_graph_process(RTGraph *g, int nframes) {
-  if (!g)
+  if (!g) {
     return;
-
-  for (int node_id : g->exec_order) {
-    Node *node = lookup_node(g, node_id);
-    if (!node)
-      continue;
-    node->process(nframes, g->nodes);
   }
 
-  if (!g->exec_order.empty()) {
-    Node *last = lookup_node(g, g->exec_order.back());
-    if (last && !last->outputs.empty()) {
-      const auto &out = last->outputs[0];
-      std::printf("First 8 output samples:\n");
-      for (int i = 0; i < 8 && i < static_cast<int>(out.size()); ++i) {
-        std::printf("%d: %.6f\n", i, out[static_cast<std::size_t>(i)]);
-      }
+  if (nframes < 0 || nframes > g->max_frames) {
+    std::fprintf(stderr, "Invalid nframes: %d (max_frames=%d)\n", nframes,
+                 g->max_frames);
+    return;
+  }
+
+  for (std::size_t i = 0; i < g->nodes.size(); ++i) {
+    switch (g->nodes[i].kind) {
+    case NodeKind::SinOsc:
+      process_sinosc(g->nodes, i, nframes);
+      break;
+    case NodeKind::Out:
+      process_out(g->nodes, i, nframes);
+      break;
+    }
+  }
+
+  if (!g->nodes.empty() && !g->nodes.back().outputs.empty()) {
+    const auto out = output_span(g->nodes.back(), PortIndex{0}, nframes);
+    std::printf("First 8 output samples:\n");
+    for (int i = 0; i < 8 && i < static_cast<int>(out.size()); ++i) {
+      std::printf("%d: %.6f\n", i, out[static_cast<std::size_t>(i)]);
     }
   }
 }
