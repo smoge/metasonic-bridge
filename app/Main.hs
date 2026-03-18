@@ -19,8 +19,6 @@ import           Foreign
 import           Foreign.C.Types
 import           GHC.Generics               (Generic)
 
-
-
 ------------------------------------------------------------
 -- Strong identifiers on the Haskell side
 ------------------------------------------------------------
@@ -78,6 +76,7 @@ data NodeSpec = NodeSpec
   }
   deriving (Eq, Show, Generic, NFData)
 
+
 data SynthGraph = SynthGraph
   { sgNodes :: !(M.Map NodeID NodeSpec)
   }
@@ -98,6 +97,7 @@ emptyGraph = SynthGraph M.empty
 runSynth :: SynthM a -> SynthGraph
 runSynth m = ssGraph (execState m (SynthState 0 emptyGraph))
 
+-- Lazy version (not thread-safe, but simpler to write and read)
 -- freshNodeID :: SynthM NodeID
 -- freshNodeID = do
 --   st <- get
@@ -105,6 +105,7 @@ runSynth m = ssGraph (execState m (SynthState 0 emptyGraph))
 --   put st {ssNextID = n + 1}
 --   pure (NodeID n)
 
+-- Strict version
 freshNodeID :: SynthM NodeID
 freshNodeID = do
   st <- get
