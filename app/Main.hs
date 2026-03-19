@@ -4,427 +4,202 @@
 {-# LANGUAGE DerivingStrategies         #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
-{-# OPTIONS_GHC -Wno-unused-imports #-}
+-- |
+-- Module      : Main
+-- Description : Demonstration of the MetaSonic compilation pipeline
+--
+-- Exercises the full pipeline from source graph construction
+-- through to C++ execution, printing intermediate
+-- representations at each stage.
+--
+-- See Note [Example graphs] for what the three test cases
+-- are designed to exercise.
+--
+-- See Note [Pipeline reading order] in MetaSonic.Types for
+-- the recommended reading sequence across the library.
 
 module Main where
 
-import           Control.DeepSeq
-import           Control.Exception          (bracket, evaluate)
-import           Control.Monad              (foldM, forM_)
-import           Control.Monad.State.Strict
-import           Data.List
-import qualified Data.Map.Strict            as M
-import qualified Data.Set                   as S
-import           Foreign
-import           Foreign.C.Types
-import           GHC.Generics               (Generic)
-
-------------------------------------------------------------
--- Strong identifiers on the Haskell side
-------------------------------------------------------------
-
-newtype NodeID = NodeID Int
-  deriving stock (Eq, Ord, Show, Generic)
-  deriving newtype (NFData)
-
-newtype NodeIndex = NodeIndex Int
-  deriving stock (Eq, Ord, Show, Generic)
-  deriving newtype (NFData)
-
-newtype PortIndex = PortIndex Int
-  deriving stock (Eq, Ord, Show, Generic)
-  deriving newtype (NFData)
-
-newtype ControlIndex = ControlIndex Int
-  deriving stock (Eq, Ord, Show, Generic)
-  deriving newtype (NFData)
-
-
-------------------------------------------------------------
--- Runtime node kinds
-------------------------------------------------------------
-
-data NodeKind
-  = KSinOsc
-  | KOut
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (NFData)
-
-
-kindTag :: NodeKind -> CInt
-kindTag KSinOsc = 1
-kindTag KOut    = 2
-
-------------------------------------------------------------
--- High-level DSL
-------------------------------------------------------------
-
-data Connection
-  = Audio !NodeID !PortIndex
-  | Param !Float
-  deriving (Eq, Show, Generic, NFData)
-
-data UGen
-  = SinOsc !Connection !Connection -- freq, phase
-  | Out !Int !Connection           -- bus, input
-  deriving (Eq, Show, Generic, NFData)
-
-data NodeSpec = NodeSpec
-  { nsID   :: !NodeID
-  , nsName :: !String
-  , nsUgen :: !UGen
-  }
-  deriving (Eq, Show, Generic, NFData)
-
-
-data SynthGraph = SynthGraph
-  { sgNodes :: !(M.Map NodeID NodeSpec)
-  }
-  deriving (Eq, Show, Generic, NFData)
-
-
-data SynthState = SynthState
-  { ssNextID :: !Int
-  , ssGraph  :: !SynthGraph
-  }
-  deriving (Eq, Show, Generic, NFData)
-
-type SynthM a = State SynthState a
-
-emptyGraph :: SynthGraph
-emptyGraph = SynthGraph M.empty
-
-runSynth :: SynthM a -> SynthGraph
-runSynth m = ssGraph (execState m (SynthState 0 emptyGraph))
-
--- Lazy version (not thread-safe, but simpler to write and read)
--- freshNodeID :: SynthM NodeID
--- freshNodeID = do
---   st <- get
---   let n = ssNextID st
---   put st {ssNextID = n + 1}
---   pure (NodeID n)
-
--- Strict version
-freshNodeID :: SynthM NodeID
-freshNodeID = do
-  st <- get
-  let !n  = ssNextID st
-      !n' = n + 1
-  put st { ssNextID = n' }
-  pure (NodeID n)
-
-insertNode :: String -> UGen -> SynthM NodeID
-insertNode name ugen = do
-  nid <- freshNodeID
-  st <- get
-  let spec = NodeSpec nid name ugen
-      graph = ssGraph st
-  put st {ssGraph = graph {sgNodes = M.insert nid spec (sgNodes graph)}}
-  pure nid
-
-sinOsc :: Float -> Float -> SynthM NodeID
-sinOsc freq phase =
-  insertNode "sinOsc" (SinOsc (Param freq) (Param phase))
-
-out :: Int -> NodeID -> SynthM NodeID
-out bus src =
-  insertNode "out" (Out bus (Audio src (PortIndex 0)))
-
-------------------------------------------------------------
--- Validation and topological ordering
-------------------------------------------------------------
-
-dependencies :: UGen -> [NodeID]
-dependencies u = case u of
-  SinOsc a b -> deps [a, b]
-  Out _ a    -> deps [a]
-  where
-    deps = foldr step []
-    step (Audio nid _) acc = nid : acc
-    step (Param _) acc     = acc
-
-validateGraph :: SynthGraph -> Either String ()
-validateGraph g = do
-  mapM_ validateNode (M.elems (sgNodes g))
-  _ <- topoSort g
-  pure ()
-  where
-    exists nid = M.member nid (sgNodes g)
-
-    validateNode spec =
-      mapM_ checkDep (dependencies (nsUgen spec))
-
-    checkDep nid
-      | exists nid = Right ()
-      | otherwise  = Left ("Missing dependency: " ++ show nid)
-
-topoSort :: SynthGraph -> Either String [NodeID]
-topoSort g = do
-  (_, _, order) <- foldM step (S.empty, S.empty, []) (M.keys (sgNodes g))
-  pure (reverse order)
-  where
-    depMap = M.map (dependencies . nsUgen) (sgNodes g)
-
-    step ::
-      (S.Set NodeID, S.Set NodeID, [NodeID]) ->
-      NodeID ->
-      Either String (S.Set NodeID, S.Set NodeID, [NodeID])
-    step (temp, perm, acc) nid = go temp perm acc nid
-
-    go ::
-      S.Set NodeID ->
-      S.Set NodeID ->
-      [NodeID] ->
-      NodeID ->
-      Either String (S.Set NodeID, S.Set NodeID, [NodeID])
-    go temp perm acc nid
-      | nid `S.member` perm = Right (temp, perm, acc)
-      | nid `S.member` temp = Left ("Cycle detected at node " ++ show nid)
-      | otherwise =
-          case M.lookup nid depMap of
-            Nothing -> Left ("Unknown node in topoSort: " ++ show nid)
-            Just ds -> do
-              let temp' = S.insert nid temp
-              (temp'', perm', acc') <-
-                foldM
-                  (\(t, p, a) d -> go t p a d)
-                  (temp', perm, acc)
-                  ds
-              let tempFinal = S.delete nid temp''
-                  permFinal = S.insert nid perm'
-              pure (tempFinal, permFinal, nid : acc')
-
-------------------------------------------------------------
--- Symbolic IR (still uses NodeID)
-------------------------------------------------------------
-
-data InputConn
-  = FromNode !NodeID !PortIndex
-  | Const !Float
-  deriving (Eq, Show, Generic, NFData)
-
-data NodeIR = NodeIR
-  { irNodeID   :: !NodeID
-  , irKind     :: !NodeKind
-  , irInputs   :: ![InputConn]
-  , irControls :: ![Float]
-  }
-  deriving (Eq, Show, Generic, NFData)
-
-data GraphIR = GraphIR
-  { giNodes     :: ![NodeIR]
-  , giExecOrder :: ![NodeID]
-  }
-  deriving (Eq, Show, Generic, NFData)
-
-lowerNode :: NodeSpec -> NodeIR
-lowerNode spec =
-  case nsUgen spec of
-    SinOsc freq phase ->
-      NodeIR
-        { irNodeID = nsID spec
-        , irKind = KSinOsc
-        , irInputs = map lowerConn [freq, phase]
-        , irControls = [connDefault freq, connDefault phase]
-        }
-    Out bus input ->
-      NodeIR
-        { irNodeID = nsID spec
-        , irKind = KOut
-        , irInputs = [lowerConn input]
-        , irControls = [fromIntegral bus]
-        }
-  where
-    lowerConn c = case c of
-      Audio nid port -> FromNode nid port
-      Param x        -> Const x
-
-    connDefault c = case c of
-      Param x   -> x
-      Audio _ _ -> 0.0
-
-lowerGraph :: SynthGraph -> Either String GraphIR
-lowerGraph g = do
-  validateGraph g
-  order <- topoSort g
-  pure GraphIR
-    { giNodes = map lowerNode (M.elems (sgNodes g))
-    , giExecOrder = order
-    }
-
-------------------------------------------------------------
--- Compiled runtime graph (dense NodeIndex, no symbolic lookups at runtime)
-------------------------------------------------------------
-
-data RuntimeInput
-  = RFrom !NodeIndex !PortIndex
-  | RConst !Float
-  deriving (Eq, Show, Generic, NFData)
-
-data RuntimeNode = RuntimeNode
-  { rnIndex      :: !NodeIndex
-  , rnOriginalID :: !NodeID
-  , rnKind       :: !NodeKind
-  , rnInputs     :: ![RuntimeInput]
-  , rnControls   :: ![Float]
-  }
-  deriving (Eq, Show, Generic, NFData)
-
-
-data RuntimeGraph = RuntimeGraph
-  { rgNodes :: ![RuntimeNode]
-  }
-  deriving (Eq, Show, Generic, NFData)
-
-compileRuntimeGraph :: GraphIR -> Either String RuntimeGraph
-compileRuntimeGraph ir = do
-  let !execOrder = giExecOrder ir
-      !indexMap =
-        M.fromList (zipWith (\i nid -> (nid, NodeIndex i)) [0..] execOrder)
-      !nodeMap =
-        M.fromList [(irNodeID n, n) | n <- giNodes ir]
-      indexedOrder =
-        zipWith (\i nid -> (NodeIndex i, nid)) [0..] execOrder
-
-  nodes <- mapM (compileNode indexMap nodeMap) indexedOrder
-  let !rg = RuntimeGraph nodes
-  pure rg
-  where
-    compileNode indexMap nodeMap (ix, nid) = do
-      node <-
-        maybe
-          (Left ("Missing node in compileRuntimeGraph: " ++ show nid))
-          Right
-          (M.lookup nid nodeMap)
-
-      inputs <- mapM (compileInput indexMap) (irInputs node)
-
-      let !rtNode = RuntimeNode
-            { rnIndex      = ix
-            , rnOriginalID = nid
-            , rnKind       = irKind node
-            , rnInputs     = inputs
-            , rnControls   = irControls node
-            }
-      pure rtNode
-
-    compileInput indexMap inp =
-      case inp of
-        Const x ->
-          Right (RConst x)
-
-        FromNode src port ->
-          case M.lookup src indexMap of
-            Nothing ->
-              Left ("Missing runtime index for source node " ++ show src)
-            Just ix ->
-              Right (RFrom ix port)
-
-
-
-------------------------------------------------------------
--- FFI layer
-------------------------------------------------------------
-
-data RTGraph
-
-foreign import ccall unsafe "rt_graph_create"
-  c_rt_graph_create :: CInt -> CInt -> IO (Ptr RTGraph)
-
-foreign import ccall unsafe "rt_graph_destroy"
-  c_rt_graph_destroy :: Ptr RTGraph -> IO ()
-
-foreign import ccall unsafe "rt_graph_clear"
-  c_rt_graph_clear :: Ptr RTGraph -> IO ()
-
-foreign import ccall unsafe "rt_graph_add_node"
-  c_rt_graph_add_node :: Ptr RTGraph -> CInt -> CInt -> IO ()
-
-foreign import ccall unsafe "rt_graph_set_control"
-  c_rt_graph_set_control :: Ptr RTGraph -> CInt -> CInt -> CFloat -> IO ()
-
-foreign import ccall unsafe "rt_graph_connect"
-  c_rt_graph_connect :: Ptr RTGraph -> CInt -> CInt -> CInt -> CInt -> IO ()
-
-foreign import ccall unsafe "rt_graph_process"
-  c_rt_graph_process :: Ptr RTGraph -> CInt -> IO ()
-
-withRTGraph :: Int -> Int -> (Ptr RTGraph -> IO a) -> IO a
-withRTGraph capacity maxFrames =
-  bracket
-    (c_rt_graph_create (fromIntegral capacity) (fromIntegral maxFrames))
-    c_rt_graph_destroy
-
-cNodeIndex :: NodeIndex -> CInt
-cNodeIndex (NodeIndex x) = fromIntegral x
-
-cPortIndex :: PortIndex -> CInt
-cPortIndex (PortIndex x) = fromIntegral x
-
-cControlIndex :: ControlIndex -> CInt
-cControlIndex (ControlIndex x) = fromIntegral x
-
-loadRuntimeGraph :: Ptr RTGraph -> RuntimeGraph -> IO ()
-loadRuntimeGraph g rg = do
-  c_rt_graph_clear g
-  mapM_ addNode (rgNodes rg)
-  mapM_ wireNode (rgNodes rg)
-  where
-    addNode node = do
-      c_rt_graph_add_node g (cNodeIndex (rnIndex node)) (kindTag (rnKind node))
-      forM_ (zipWith (\i v -> (ControlIndex i, v)) [0 ..] (rnControls node)) $ \(ci, v) ->
-        c_rt_graph_set_control g (cNodeIndex (rnIndex node)) (cControlIndex ci) (CFloat v)
-
-    wireNode node =
-      forM_ (zipWith (\i inp -> (PortIndex i, inp)) [0 ..] (rnInputs node)) $ \(dstPort, inp) ->
-        case inp of
-          RFrom src srcPort ->
-            c_rt_graph_connect
-              g
-              (cNodeIndex src)
-              (cPortIndex srcPort)
-              (cNodeIndex (rnIndex node))
-              (cPortIndex dstPort)
-          RConst _ ->
-            pure ()
-
-------------------------------------------------------------
--- Demo
-------------------------------------------------------------
-
+import           Control.DeepSeq   (force)
+import           Control.Exception (evaluate)
+import           Foreign.C.Types   (CInt)
+
+import           MetaSonic.Compile
+import           MetaSonic.FFI
+import           MetaSonic.IR
+import           MetaSonic.Source
+import           MetaSonic.Types
+
+{- Note [Example graphs]
+~~~~~~~~~~~~~~~~~~~~~~~~
+The three example graphs are ordered by structural complexity.
+Each is designed to exercise a specific aspect of the
+compilation pipeline:
+
+simpleGraph — SinOsc → Out
+  The minimal graph. Two SampleRate nodes in a linear chain.
+  Should form a single region in formRegions. Validates that
+  the basic pipeline (validate, sort, lower, annotate, compile,
+  transfer, execute) works end to end.
+
+chainGraph — SinOsc → Gain → Out
+  A linear chain of three same-rate nodes with no fan-out.
+  Should also form a single region, demonstrating that the
+  greedy region formation algorithm (see Note [Region formation]
+  in MetaSonic.Compile) correctly extends across compatible
+  nodes.
+
+  This chain is the canonical fusion target: when
+  kernel fusion is implemented, the oscillator, multiply, and
+  output copy can be compiled into a single sample loop,
+  eliminating the two intermediate buffers.
+
+  Expected output: Gain output should be half the amplitude
+  of the raw oscillator (gain factor = 0.5).
+
+fanOutGraph — SinOsc → 2×Gain → 2×Out
+  One oscillator feeding two independent gain paths. The
+  fan-out from the oscillator means the two Gain nodes both
+  depend on a common upstream node.
+
+  This tests whether region formation correctly handles fan-out.
+  Fusion and splitting are dual transformations: sometimes a region
+  should be split at a fan-out point to expose parallelism
+  or improve vectorization.
+
+  Expected output: two output buses at 0.3 and 0.7 amplitude.
+-}
+
+-- | Minimal graph: one oscillator writing to output bus 0.
+--
+-- See Note [Example graphs].
 simpleGraph :: SynthGraph
 simpleGraph = runSynth $ do
   osc <- sinOsc 440.0 0.0
   out 0 osc
 
+-- | Linear chain: oscillator → gain → output.
+--
+-- See Note [Example graphs].
+chainGraph :: SynthGraph
+chainGraph = runSynth $ do
+  osc <- sinOsc 440.0 0.0
+  g   <- gain osc 0.5
+  out 0 g
+
+-- | Fan-out: one oscillator feeds two independent gain
+-- nodes, each writing to a separate output bus.
+--
+-- See Note [Example graphs].
+fanOutGraph :: SynthGraph
+fanOutGraph = runSynth $ do
+  osc <- sinOsc 440.0 0.0
+  g1  <- gain osc 0.3
+  g2  <- gain osc 0.7
+  out 0 g1
+  out 1 g2
+
+{- Note [Pipeline runner stages]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+runPipeline takes a source graph through four stages, printing
+the result of each to make the staged architecture visible:
+
+  Stage 1 — Lower to IR (lowerGraph)
+    Validates, toposorts, annotates with rates and effects,
+    checks rate edge compatibility.
+    See Note [Lowering as compilation] in MetaSonic.IR.
+
+  Stage 2 — Region formation (formRegions)
+    Partitions the annotated IR into schedulable regions.
+    See Note [Region formation] in MetaSonic.Compile.
+
+  Stage 3 — Dense compilation (compileRuntimeGraph)
+    Replaces NodeID with NodeIndex; erases symbolic identity.
+    See Note [Dense lowering] in MetaSonic.Compile.
+
+  Stage 4 — C++ execution (loadRuntimeGraph + rt_graph_process)
+    Transfers the dense graph across the FFI boundary and
+    processes three audio blocks.
+    See Note [FFI boundary design] in MetaSonic.FFI.
+
+Each stage's output is force-evaluated before printing to
+ensure that any errors surface at the correct stage rather
+than being deferred by laziness.
+-}
+
+-- | Run the full compilation pipeline on a graph and print
+-- each stage's output.
+--
+-- See Note [Pipeline runner stages].
+runPipeline :: String -> SynthGraph -> IO ()
+runPipeline label graph = do
+  putStrLn $ "\n══════════════════════════════════════"
+  putStrLn $ "  " ++ label
+  putStrLn   "══════════════════════════════════════"
+
+  -- Stage 1: Lower to IR.
+  -- See Note [Lowering as compilation] in MetaSonic.IR.
+  case lowerGraph graph of
+    Left err -> putStrLn $ "  Lowering error: " ++ err
+    Right ir -> do
+      ir' <- evaluate (force ir)
+      putStrLn "\n  IR nodes (execution order):"
+      mapM_ printIRNode (giNodes ir')
+
+      -- Stage 2: Region formation.
+      -- See Note [Region formation] in MetaSonic.Compile.
+      let !regionGraph = formRegions (giNodes ir')
+      putStrLn "\n  Regions:"
+      mapM_ printRegion (rgRegions regionGraph)
+
+      -- Stage 3: Dense compilation.
+      -- See Note [Dense lowering] in MetaSonic.Compile.
+      case compileRuntimeGraph ir' of
+        Left err -> putStrLn $ "  Compilation error: " ++ err
+        Right rg -> do
+          rg' <- evaluate (force rg)
+          putStrLn "\n  Runtime nodes (dense):"
+          mapM_ printRTNode (rgNodes rg')
+
+          -- Stage 4: C++ execution.
+          -- See Note [FFI boundary design] in MetaSonic.FFI.
+          withRTGraph 16 64 $ \rt -> do
+            loadRuntimeGraph rt rg'
+            putStrLn "\n  Processing 3 blocks in C++..."
+            mapM_ (\n -> do
+              putStrLn $ "  Block " ++ show n
+              c_rt_graph_process rt 64
+              ) [1 :: Int .. 3]
+
+  putStrLn ""
+
+-- Diagnostic printers. These are not part of the
+-- compilation pipeline; they exist only to make the
+-- intermediate representations visible during development.
+
+printIRNode :: NodeIR -> IO ()
+printIRNode n =
+  putStrLn $ "    " ++ show (irNodeID n)
+          ++ " : " ++ show (irKind n)
+          ++ " @ " ++ show (irRate n)
+          ++ "  effects=" ++ show (irEffects n)
+
+printRegion :: Region -> IO ()
+printRegion r =
+  putStrLn $ "    " ++ show (regID r)
+          ++ " [" ++ show (regRate r) ++ "]"
+          ++ "  nodes=" ++ show (regNodes r)
+          ++ "  deps=" ++ show (regDeps r)
+
+printRTNode :: RuntimeNode -> IO ()
+printRTNode n =
+  putStrLn $ "    " ++ show (rnIndex n)
+          ++ " ← " ++ show (rnOriginalID n)
+          ++ " : " ++ show (rnKind n)
+
 main :: IO ()
 main = do
-  putStrLn "Building graph in Haskell..."
-  print simpleGraph
-
-  case lowerGraph simpleGraph of
-    Left err -> putStrLn ("Lowering error: " ++ err)
-    Right ir0 -> do
-      ir <- evaluate (force ir0)
-      putStrLn "Lowered symbolic IR:"
-      print ir
-
-      case compileRuntimeGraph ir of
-        Left err -> putStrLn ("Runtime compilation error: " ++ err)
-        Right rg0 -> do
-          rg <- evaluate (force rg0)
-          putStrLn "Compiled runtime graph:"
-          print rg
-
-          withRTGraph 16 64 $ \rt -> do
-            loadRuntimeGraph rt rg
-
-            putStrLn "Processing 3 blocks in C++..."
-            mapM_
-              (\n -> do
-                  putStrLn ("Block " ++ show n)
-                  c_rt_graph_process rt 64)
-              [1 :: Int .. 3]
-
-          putStrLn "Done."
+  runPipeline "Simple (SinOsc → Out)"              simpleGraph
+  runPipeline "Chain (SinOsc → Gain → Out)"        chainGraph
+  runPipeline "Fan-out (SinOsc → 2×Gain → 2×Out)" fanOutGraph
+  putStrLn "Done."

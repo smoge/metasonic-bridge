@@ -4,7 +4,7 @@ license: GPL-3.0-only
 author: Bernardo Barros
 maintainer: bernardo@example.com
 copyright: "2026 Bernardo Barros"
-synopsis: Haskell graph compiler for the MetaSonic RT engine
+synopsis: MetaSonic bridge between Haskell graph compiler and RT engine
 category: Audio
 
 dependencies:
@@ -16,29 +16,46 @@ dependencies:
 ghc-options:
   - -Wall
 
+# MetaSonic modules live here. The C++ runtime is
+# compiled as part of the library so that both the executable
+# and future test suites link against the same object.
+
+library:
+  source-dirs: src
+  exposed-modules:
+    - MetaSonic.Types
+    - MetaSonic.Source
+    - MetaSonic.Validate
+    - MetaSonic.IR
+    - MetaSonic.Compile
+    - MetaSonic.FFI
+
+  cxx-sources:
+    - cbits/rt_graph.cpp
+
+  cxx-options:
+    - -std=c++20
+
+  include-dirs:
+    - cbits
+    - vendor/q
+    - vendor/q/q_lib/include
+    - vendor/q/q_io/include
+    - vendor/infra/include
+
+  extra-libraries:
+    - stdc++
+    - portaudio
+    - portmidi
+
+# Thin app that imports the library. No C++ here — it all
+# comes through the library dependency.
+
 executables:
   metasonic-bridge:
     main: Main.hs
-    source-dirs:
-      - app
-
-    cxx-sources:
-      - cbits/rt_graph.cpp
-
-    include-dirs:
-      - cbits
-      - vendor/q
-      - vendor/q/q_lib/include
-      - vendor/q/q_io/include
-      - vendor/infra/include
-
+    source-dirs: app
     ghc-options:
       - -O2
-
-    extra-libraries:
-      - stdc++
-      - portaudio
-      - portmidi
-
-    cxx-options:
-      - -std=c++20
+    dependencies:
+      - metasonic-bridge
