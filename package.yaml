@@ -27,12 +27,18 @@ executables:
 
     include-dirs:
       - cbits
+      - vendor/q
+      - vendor/q/q_lib/include
+      - vendor/q/q_io/include
+      - vendor/infra/include
 
     ghc-options:
       - -O2
 
     extra-libraries:
       - stdc++
+      - portaudio
+      - portmidi
 
     cxx-options:
       - -std=c++20
