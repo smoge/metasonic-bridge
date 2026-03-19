@@ -5,7 +5,7 @@
 > *Before the signal moves,*
 > *the graph is already aligned.*
 
-MetaSonic is a research direction exploring compiled architectures for modular audio synthesis.
+MetaSonic is a research direction exploring a compiler architecture for real-time signal graphs with deterministic execution semantics.
 
 This repository, `metasonic-bridge`, is a prototype implementation of that idea.
 
