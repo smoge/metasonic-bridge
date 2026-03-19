@@ -1,100 +1,102 @@
- # MetaSonic Bridge
+# MetaSonic Bridge
 
-`metasonic-bridge` is an experimental project exploring a hybrid architecture for modular audio synthesis.
+> *They build systems that react.*
+> *We build systems that decide.*
 
-It separates concerns that most audio environments mix together:
+`metasonic-bridge` is a research prototype exploring a **compiled architecture for modular audio synthesis**.
 
-* graph construction and scheduling
-* real-time signal processing
+Most environments blur everything together.
 
+This one splits the world clean:
 
-In this system:
+* **Haskell** — constructs, validates, compiles
+* **C++20** — executes, deterministically, no questions asked
 
-* Haskell builds and analyzes DSP graphs.
-* C++20 executes the real-time DSP engine.
-
-This repo is a small prototype demonstrating a pipeline: 
+Pipeline:
 
 ```
-Haskell DSL → Graph IR → C++ Runtime Engine → DSP Processing
+Haskell DSL → Graph → IR → RuntimeGraph → DSP
 ```
 
-It contains a minimal working implementation of that idea.
-
-This architecture will eventually enable **future** optimizations such as UGen (kernel) fusion, where chains of nodes can be compiled into a single processing loop to reduce intermediate buffers and improve performance. That is not implemented here.
+No shortcuts. No hidden work at runtime.
 
 ---
 
 # Motivation
 
-Many modular audio environments combine several responsibilities within the same programming model:
-
+Typical audio systems mix:
 
 * graph composition
 * scheduling
-* signal processing
-* UI
-* memory management
+* DSP execution
+* state and memory
 
-Some systems — especially SuperCollider — already separate language-side composition from real-time DSP execution.
+That’s convenient.
+It’s also messy.
 
-These systems are excellent, but they also come with some trade-offs between:
-
-* flexibility
-* predictable real-time execution
-* maintainability
-
-MetaSonic explores a different approach:
+MetaSonic draws a line:
 
 ```
-graph composition ≠ signal processing
+graph ≠ execution
 ```
 
-Graph construction can be treated as a compiler problem, while DSP execution
-remains a runtime problem.
+Graph building is a **compile-time problem**.
+DSP is a **runtime problem**.
 
-This separation enables:
+That split gives you:
 
-* expressive graph composition
-* graph analysis and transformation
-* deterministic real-time DSP
-* simpler runtime engines
+* deterministic execution
+* analyzable graphs
+* minimal runtime
+* room for aggressive optimization later
 
 ---
 
-# System Architecture
-
-The system has two primary layers.
+# Architecture
 
 ```
-+---------------------+
-|     Haskell Layer   |
-|  Graph DSL + IR     |
-+----------+----------+
-           |
-           | GraphIR
-           v
-+---------------------+
-|     C++ Runtime     |
-|   DSP Graph Engine  |
-+---------------------+
++-----------------------+
+|     Haskell Layer     |
+|  DSL → Graph → IR     |
++-----------+-----------+
+            |
+            v
++-----------------------+
+|   Runtime Compiler    |
+| NodeID → NodeIndex    |
++-----------+-----------+
+            |
+            v
++-----------------------+
+|     C++ Runtime       |
+|   Dense DSP Engine    |
++-----------------------+
 ```
+
+The key move:
+
+> **Erase symbols before audio starts.**
+
+No maps. No lookups. No hesitation.
 
 ---
 
-# Haskell Layer
+# Haskell Layer (Compiler)
 
-The Haskell side is responsible for graph description and compilation.
+This is not just a DSL.
 
-Responsibilities include:
+This is a **graph compiler**.
 
-* building synthesis graphs using a DSL
-* dependency analysis
+Responsibilities:
+
+* graph construction
+* dependency tracking
 * cycle detection
 * topological sorting
-* lowering the graph into a runtime IR
+* IR generation
+* runtime graph compilation
 
-Example graph:
+Example:
 
 ```haskell
 simpleGraph :: SynthGraph
@@ -103,30 +105,27 @@ simpleGraph = runSynth $ do
   out 0 osc
 ```
 
-This generates the following graph structure:
+Underneath:
 
-```
-SinOsc(440 Hz) → Out
-```
+* symbolic `NodeID`
+* validated structure
+* ordered execution
+* compiled into dense indices
 
-The graph is lowered into a minimal IR:
+Strictness is enforced where it matters:
 
-```
-GraphIR
-  Nodes:
-    Node 0: SinOsc
-    Node 1: Out
-  Execution order:
-    [0, 1]
+```haskell
+let !n  = ssNextID st
+    !n' = n + 1
 ```
 
-This IR is passed to the runtime engine through FFI during graph compilation.
+No lazy buildup. No leaks hiding in the shadows. 
 
 ---
 
 # Graph IR
 
-The intermediate representation intentionally stays simple.
+Minimal by design:
 
 ```haskell
 data NodeIR = NodeIR
@@ -137,252 +136,222 @@ data NodeIR = NodeIR
   }
 ```
 
-The runtime engine only needs to know:
+It describes structure.
 
-* node type
-* control values
-* input connections
-* execution order
-
-This keeps the boundary between languages small and stable.
+Nothing about execution strategy.
+Nothing about memory.
 
 ---
 
-# C++ Runtime Engine
+# Runtime Graph (Where It Gets Real)
 
-The runtime engine executes DSP in blocks.
-
-Each node implements a small processing kernel.
-
-Example node types:
+The compiler transforms:
 
 ```
-SinOsc
-Out
+NodeID → NodeIndex
 ```
 
-Nodes are scheduled in topological order:
+Result:
+
+```haskell
+data RuntimeNode = RuntimeNode
+  { rnIndex      :: NodeIndex
+  , rnOriginalID :: NodeID
+  , rnKind       :: NodeKind
+  , rnInputs     :: [RuntimeInput]
+  , rnControls   :: [Float]
+  }
+```
+
+Everything is:
+
+* dense
+* pre-resolved
+* ready for linear execution
+
+No symbolic overhead survives this step. 
+
+---
+
+# C++ Runtime
+
+The runtime is not smart.
+
+It doesn’t need to be.
+
+It just runs:
 
 ```cpp
-for (int node_id : exec_order) {
-    Node* node = lookup_node(g, node_id);
-    if (node) {
-        node->process(nframes, g->nodes);
-    }
+for (std::size_t i = 0; i < g->nodes.size(); ++i) {
+    process(node[i]);
 }
 ```
 
-The runtime layer handles:
+Execution order = memory order. 
 
-* node state
-* audio buffers
-* execution scheduling
-* signal propagation
+That’s the whole trick.
 
-Because graph analysis already happened in Haskell, the runtime engine can remain small.
+## Properties
+
+* no scheduler
+* no graph traversal
+* no dynamic dispatch
+* preallocated buffers
+* per-node state
+
+Everything complicated already happened.
 
 ---
 
-# Example Runtime Output
+# DSP Semantics (Current)
 
-Running the prototype:
+This part matters, so no poetry:
+
+* inputs override controls at **block rate**
+* only **sample 0** is used for modulation
+* oscillator phase is persistent across blocks
+* buffers are allocated to `max_frames`
+
+From the runtime:
+
+> “external inputs override controls at block rate using sample 0” 
+
+So yes, this is not audio-rate modulation yet.
+
+---
+
+# FFI Boundary
+
+Small. Sharp. No abstractions leaking.
+
+```c
+rt_graph_create(...)
+rt_graph_add_node(...)
+rt_graph_connect(...)
+rt_graph_process(...)
+```
+
+That’s it. 
+
+Haskell sends intent.
+C++ executes reality.
+
+---
+
+# Example Output
 
 ```
-stack exec metasonic-bridge
-```
-
-Produces:
-
-```
-Building graph in Haskell...
-SynthGraph { ... }
-
-Lowered IR:
-GraphIR { ... }
-
 Processing 3 blocks in C++...
 
 Block 1
-First 8 output samples:
 0: 0.000000
 1: 0.057564
-2: 0.114937
-...
-
-Block 2
-First 8 output samples:
-0: -0.518026
-...
-
-Block 3
-First 8 output samples:
-0: 0.886202
 ...
 ```
 
-The oscillator phase continues across blocks, confirming that stateful DSP execution works correctly.
+Phase continues across blocks.
+
+State is not reset.
+
+Time keeps its memory.
 
 ---
 
 # Design Philosophy
 
-MetaSonic aims to treat synthesis graphs as **compilable structures** rather than dynamic runtime objects.
-
-This enables:
-
-* graph rewriting
-* scheduling analysis
-* compile-time optimizations
-* IR transformations
-* alternative runtimes
-
-Instead of a monolithic environment, the system becomes a pipeline:
+MetaSonic treats synthesis as a **compilation pipeline**:
 
 ```
-DSL → Graph → IR → Runtime
+DSL → Graph → IR → RuntimeGraph → DSP
 ```
 
-Each stage can evolve independently.
+Each stage is isolated.
+
+Each stage is replaceable.
+
+Each stage can evolve without breaking the others.
 
 ---
 
-# Why Haskell?
+# Why This Matters
 
-Functional languages are particularly well suited for graph construction.
-Advantages include:
+Most systems ask:
 
-* algebraic data types for graph representation
-* pattern matching for transformations
-* strong type systems for graph invariants
-* declarative DSLs
+> “What should I do next?”
 
-In this architecture, Haskell provides the DSL and acts as a graph compiler,
-while real-time DSP execution is delegated to the runtime engine.
+This one answers that question **before audio starts**.
 
+So the runtime never asks.
+
+It just executes.
 
 ---
 
-# Why C++?
+# Current State
 
-Real-time DSP engines require:
+Nodes:
 
-* predictable memory layout
-* deterministic execution
-* tight control over allocations
-* efficient math operations
-
-C++ remains a good fit for these requirements.
-
-The runtime engine is intentionally minimal and focuses only on `signal processing`.
-
----
-
-# Current Prototype
-
-Implemented nodes:
-
-```
-SinOsc
-Out
-```
+* `SinOsc`
+* `Out`
 
 Features:
 
-* graph DSL in Haskell
-* topological scheduling
-* IR lowering
+* strict graph construction
+* topological ordering
+* runtime graph compilation
+* dense execution model
 * FFI bridge
-* real-time block processing
+* stateful DSP
 
 Limitations:
 
-* block-rate modulation
-* buffers resized per block
+* block-rate modulation only
 * minimal node set
-* no audio device output
-* graph compiled only once at startup
-
-The prototype focuses on validating the architecture.
+* no audio output device
+* static graph
 
 ---
 
 # Roadmap
 
-Short-term goals:
+Short-term:
 
-* a variety of oscillator and filter nodes
-* unit tests and property-based testing
-* preallocated buffers
-* graph validation improvements
+* filters, envelopes
+* shared buffers
+* better validation
 
-Medium-term goals:
+Mid-term:
 
-* parameter automation
 * audio-rate modulation
-* larger node library
-* real-time command queue
+* parameter automation
+* command queue
 
-Long-term goals:
+Long-term:
 
-* typed DSP graphs
+* kernel fusion
+* multi-rate graphs
+* SIMD execution
 * dynamic graph mutation
-* vectorized DSP kernels
-* offline rendering
-* plugin backends
-
-Ultimately the goal is a flexible synthesis system where:
-
-* graph construction is declarative
-* DSP execution moves toward deterministic real-time behavior
-
 
 ---
 
-# Building
-
-Requirements:
-
-* GHC ≥ 9
-* Stack
-* C++20 compiler (gcc, clang)
-
-
-Build:
+# Build
 
 ```bash
 stack build
-```
-
-Run:
-
-```bash
 stack exec metasonic-bridge
-```
-
----
-
-# Project Structure
-
-```
-metasonic-bridge
-│
-├─ app/
-│  └─ Main.hs
-│
-├─ cbits/
-│  ├─ rt_graph.cpp
-│  └─ rt_graph.h
-│
-├─ package.yaml
-├─ stack.yaml
-└─ README.md
 ```
 
 ---
 
 # Status
 
-This is a research prototype. The architecture is still evolving and APIs may
-change. The project in this repo exists to explore ideas about graph-based
-synthesis systems rather than to provide a finished production engine.
+Research prototype.
 
+APIs unstable.
+Architecture evolving.
+
+---
+
+> *You thought this was a synth.*
+> *It’s a compiler wearing headphones.*
