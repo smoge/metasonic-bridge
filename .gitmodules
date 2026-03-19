@@ -1,0 +1,6 @@
+[submodule "vendor/q"]
+	path = vendor/q
+	url = https://github.com/cycfi/q.git
+[submodule "vendor/infra"]
+	path = vendor/infra
+	url = https://github.com/cycfi/infra.git
