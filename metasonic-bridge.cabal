@@ -6,7 +6,7 @@ cabal-version: 2.2
 
 name:           metasonic-bridge
 version:        0.1.0.0
-synopsis:       Haskell graph compiler for the MetaSonic RT engine
+synopsis:       MetaSonic bridge between Haskell graph compiler and RT engine
 category:       Audio
 author:         Bernardo Barros
 maintainer:     bernardo@example.com
@@ -15,15 +15,22 @@ license:        GPL-3.0-only
 license-file:   LICENSE
 build-type:     Simple
 
-executable metasonic-bridge
-  main-is: Main.hs
+library
+  exposed-modules:
+      MetaSonic.Types
+      MetaSonic.Source
+      MetaSonic.Validate
+      MetaSonic.IR
+      MetaSonic.Compile
+      MetaSonic.FFI
   other-modules:
+      Lib
       Paths_metasonic_bridge
   autogen-modules:
       Paths_metasonic_bridge
   hs-source-dirs:
-      app
-  ghc-options: -Wall -O2
+      src
+  ghc-options: -Wall
   cxx-options: -std=c++20
   include-dirs:
       cbits
@@ -41,5 +48,22 @@ executable metasonic-bridge
       base >=4.14 && <5
     , containers
     , deepseq
+    , mtl
+  default-language: Haskell2010
+
+executable metasonic-bridge
+  main-is: Main.hs
+  other-modules:
+      Paths_metasonic_bridge
+  autogen-modules:
+      Paths_metasonic_bridge
+  hs-source-dirs:
+      app
+  ghc-options: -Wall -O2
+  build-depends:
+      base >=4.14 && <5
+    , containers
+    , deepseq
+    , metasonic-bridge
     , mtl
   default-language: Haskell2010
