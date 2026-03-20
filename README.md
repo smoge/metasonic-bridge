@@ -1,13 +1,12 @@
 # MetaSonic
 
-> *Before the sound breathes,*
-> *the structure is decided.*
-> *Before the signal moves,*
-> *the graph is already aligned.*
+MetaSonic is a research project exploring compiler architecture for
+real-time signal graphs with deterministic execution semantics. This
+repository, metasonic-bridge, is a prototype implementation of that
+architecture.
 
-MetaSonic is a research direction exploring a compiler architecture for real-time signal graphs with deterministic execution semantics.
-
-This repository, `metasonic-bridge`, is a prototype implementation of that idea.
+The code is documented with Haddock comments and cross-reference
+notes, which are more detailed than the README.md and ARCHITECTURE.md files.
 
 ---
 
@@ -36,24 +35,18 @@ Everything is resolved before the C++ layer.
 
 ## Why this exists
 
-Most audio environments combine:
+Most audio environments combine graph composition, scheduling, signal
+processing, and state management into a single layer.
 
-* graph composition
-* scheduling
-* signal processing
-* state management
+Convenient at first - but complexity grows, reasoning and maintenance gets more difficult.
 
-Convenient.
-But complexity leaks, reasoning breaks down, and maintenance gets harder.
-
-MetaSonic separates:
+MetaSonic separates them:
 
 ```
 graph construction ≠ signal execution
 ```
 
-Graph building becomes a compiler problem.
-DSP becomes a runtime problem.
+Graph building is a compiler problem. DSP is a runtime problem.
 
 ---
 
@@ -76,7 +69,7 @@ When audio starts, decisions are already made.
 
 ---
 
-## Example
+## Minimal example
 
 ```haskell
 simpleGraph = runSynth $ do
@@ -90,20 +83,14 @@ A simple chain:
 SinOsc → Out
 ```
 
-But what runs is not this structure directly.
-
-It’s a compiled version of it.
+But what runs is not this structure directly — it's a compiled version of it.
 
 ---
 
-## What this means?
+## What this means
 
-The runtime is simple on purpose.
-
-It doesn’t resolve graphs.
-It doesn’t schedule.
-
-It executes what was already decided.
+The runtime is simple on purpose. It doesn't resolve graphs. 
+It doesn't schedule. It executes what was already decided.
 
 ---
 
@@ -119,14 +106,15 @@ This is a structural prototype of the MetaSonic approach.
 
 ---
 
-## More:
+## More
 
+* Haddock documentation (comments) and Notes
 * ARCHITECTURE.md 
 * ROADMAP.md 
 
 ---
 
-> *you thought this was a synth*
-> *it’s a compiler with headphones, rewriting the script*
-> *no reaction, just action, every move already fixed*
-> *press play—too late, it was already legit*
+> *Before the sound breathes,*
+> *the structure is decided.*
+> *Before the signal moves,*
+> *the graph is already aligned.*
