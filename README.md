@@ -10,6 +10,20 @@ notes, which are more detailed than the README.md and ARCHITECTURE.md files.
 
 ---
 
+## Why "metasonic-bridge"
+
+This repository is one piece — but a fundamental one — of a larger system design. metasonic-bridge focuses on graph compilation: representing audio graphs in a strongly typed IR (intermediate representation), stripping away unnecessary elements, and marshaling the result across a thin FFI boundary into C++.
+
+But it is only one layer. The two adjacent layers can each be developed independently (as the different modules in this repo, which correspond to different stages into the pipeline):
+
+* metasonic — the Haskell DSL that sits above this layer. It can be developed with no FFI involvement whatsoever.
+* tinysynth — the audio engine, written entirely in C++20. Plugins are written at this layer and can be built and tested purely in C++.
+
+The bridge naturally requires that the Haskell and C++ sides stay in sync — particularly when new tinysynth plugins are introduced — but there are plans to automate more of this synchronization via plugin metadata.
+
+
+--- 
+
 Most systems blur everything together.
 
 This one draws a line.
@@ -30,6 +44,7 @@ No runtime graph solving.
 No “figure it out later.”
 
 Everything is resolved before the C++ layer.
+
 
 ---
 
