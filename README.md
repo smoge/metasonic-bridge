@@ -35,6 +35,8 @@ sides stay in sync â€” particularly when new tinysynth plugins are introduced â€
 though there are plans to derive more of this synchronization from plugin
 metadata rather than hard-coding it.
 
+---
+
 Most systems blur everything together.
 
 This one draws a line.
