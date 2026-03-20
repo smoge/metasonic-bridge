@@ -1,25 +1,38 @@
 # MetaSonic
 
-MetaSonic is a research project exploring compiler architecture for
-real-time signal graphs with deterministic execution semantics. This
-repository, metasonic-bridge, is a prototype implementation of that
-architecture.
+MetaSonic is a research project exploring compiler architecture for real-time
+signal graphs with deterministic execution semantics. 
 
-The code is documented with Haddock comments and cross-reference
-notes, which are more detailed than the README.md and ARCHITECTURE.md files.
+This repository, metasonic-bridge, is a prototype implementation of that
+architecture. The source code is documented with Haddock comments and
+cross-reference notes that go into significantly more detail than the README.md
+and ARCHITECTURE.md files.
+
+For the most complete picture of the system, read the code and comments in
+pipeline order, starting from ./src/MetaSonic/Types.hs.
+
 
 ---
 
 ## Why "metasonic-bridge"
 
-This repository is one piece — but a fundamental one — of a larger system design. metasonic-bridge focuses on graph compilation: representing audio graphs in a strongly typed IR (intermediate representation), stripping away unnecessary elements, and marshaling the result across a thin FFI boundary into C++.
+This repository is one piece — but a fundamental one — of a larger system
+design. metasonic-bridge focuses on graph compilation: representing audio graphs
+in a strongly typed IR (intermediate representation), stripping away unnecessary
+elements, and marshaling the result across a thin FFI boundary into C++.
 
-But it is only one layer. The two adjacent layers can each be developed independently (as the different modules in this repo, which correspond to different stages into the pipeline):
+But it is only one layer. The two adjacent layers can each be developed
+independently (as the different modules in this repo, which correspond to
+different stages into the pipeline):
 
-* metasonic — the Haskell DSL that sits above this layer. It can be developed with no FFI involvement whatsoever.
-* tinysynth — the audio engine, written entirely in C++20. Plugins are written at this layer and can be built and tested purely in C++.
+* metasonic — the Haskell DSL that sits above this layer. It can be developed
+  with no FFI involvement whatsoever.
+* tinysynth — the audio engine, written entirely in C++20. Plugins are written
+  at this layer and can be built and tested purely in C++.
 
-The bridge naturally requires that the Haskell and C++ sides stay in sync — particularly when new tinysynth plugins are introduced — but there are plans to automate more of this synchronization via plugin metadata.
+The bridge naturally requires that the Haskell and C++ sides stay in sync —
+particularly when new tinysynth plugins are introduced — but there are plans to
+automate more of this synchronization via plugin metadata.
 
 
 --- 
@@ -53,7 +66,8 @@ Everything is resolved before the C++ layer.
 Most audio environments combine graph composition, scheduling, signal
 processing, and state management into a single layer.
 
-Convenient at first - but complexity grows, reasoning and maintenance gets more difficult.
+Convenient at first - but complexity grows, reasoning and maintenance gets more
+difficult.
 
 MetaSonic separates them:
 
