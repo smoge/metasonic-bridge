@@ -5,11 +5,11 @@ signal graphs with deterministic execution semantics.
 
 This repository, metasonic-bridge, is a prototype implementation of that
 architecture. The source code is documented with Haddock comments and
-cross-reference notes that go into significantly more detail than the README.md
-and ARCHITECTURE.md files.
+cross-reference notes that go into significantly more detail than this README.md
+file.
 
-For the most complete picture of the system, read the code and comments in
-pipeline order, starting from ./src/MetaSonic/Types.hs.
+For s detailed and conceptual picture of the system, read the code and comments
+in pipeline order, starting from ./src/MetaSonic/Types.hs.
 
 ---
 
