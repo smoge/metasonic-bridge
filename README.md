@@ -11,7 +11,6 @@ and ARCHITECTURE.md files.
 For the most complete picture of the system, read the code and comments in
 pipeline order, starting from ./src/MetaSonic/Types.hs.
 
-
 ---
 
 ## Why "metasonic-bridge"
@@ -19,23 +18,22 @@ pipeline order, starting from ./src/MetaSonic/Types.hs.
 This repository is one piece — but a fundamental one — of a larger system
 design. metasonic-bridge focuses on graph compilation: representing audio graphs
 in a strongly typed IR (intermediate representation), stripping away unnecessary
-elements, and marshaling the result across a thin FFI boundary into C++.
+elements, and marshaling the result across a thin FFI boundary into C++. 
 
 But it is only one layer. The two adjacent layers can each be developed
-independently (as the different modules in this repo, which correspond to
-different stages into the pipeline):
+independently:
 
 * metasonic — the Haskell DSL that sits above this layer. It can be developed
-  with no FFI involvement whatsoever.
-* tinysynth — the audio engine, written entirely in C++20. Plugins are written
-  at this layer and can be built and tested purely in C++.
+with no FFI involvement whatsoever, and need not adopt the strong typing imposed
+by the bridge.
+* tinysynth — the audio engine, written entirely in C++20. Plugins are authored
+at this layer and can be built and tested purely in C++.
 
-The bridge naturally requires that the Haskell and C++ sides stay in sync —
-particularly when new tinysynth plugins are introduced — but there are plans to
-automate more of this synchronization via plugin metadata.
-
-
---- 
+The different modules in this repository roughly correspond to stages in the
+compilation pipeline. The bridge naturally requires that the Haskell and C++
+sides stay in sync — particularly when new tinysynth plugins are introduced —
+though there are plans to derive more of this synchronization from plugin
+metadata rather than hard-coding it.
 
 Most systems blur everything together.
 
