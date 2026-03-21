@@ -32,6 +32,8 @@ library:
 
   cxx-sources:
     - cbits/rt_graph.cpp
+    - vendor/q/q_io/src/audio_device.cpp
+    - vendor/q/q_io/src/audio_stream.cpp
 
   cxx-options:
     - -std=c++20
