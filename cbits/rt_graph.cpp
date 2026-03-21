@@ -1,3 +1,24 @@
+// ================================================================
+// rt_graph.cpp
+// Description : runtime DSP engine and realtime audio backend
+// ================================================================
+//
+// This file implements the C ABI declared in rt_graph.h and the
+// runtime that executes compiled graphs.
+//
+// On the Haskell side, compilation ends at RuntimeGraph: a dense,
+// execution-ordered list of nodes whose inputs already refer to
+// concrete runtime indices. On the C++ side, this file turns that
+// dense structure into preallocated node state, block processors,
+// output buses, and realtime audio stream.
+//
+//   * Haskell is responsible for graph construction, validation,
+//     topological ordering, region analysis, and dense lowering.
+//
+//   * C++ is responsible for block execution, node-local state,
+//     buffer ownership, signal propagation, and audio-device I/O.
+//
+
 #include "rt_graph.h"
 
 #include <q_io/audio_device.hpp>
@@ -18,11 +39,38 @@
 
 namespace q = cycfi::q;
 
+// Forward declaration so the internal q_io stream wrapper
 struct RTGraph;
+
+/* Note [Dense runtime model]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The runtime operates entirely on dense indices.
+
+The Haskell compiler performs the decisive symbolic -> dense lowering:
+
+  NodeID    -> NodeIndex
+  Port name -> PortIndex
+
+By the time control reaches this file, there is no symbolic lookup,
+no map from user-facing names to nodes, and no scheduling work left to
+perform.
+
+This matters for both simplicity and realtime safety.
+
+The small wrapper structs below preserve nominal distinctions between
+node positions, port positions, and control slots, even though they are
+all represented as ints at the machine level.
+*/
 
 namespace {
 
+// Default sample rate used before a realtime device is opened.
+// TODO: make this configurable
 constexpr float kDefaultSampleRate = 48000.0f;
+
+// ----------------------------------------------------------------
+// Strong internal indices
+// ----------------------------------------------------------------
 
 struct NodeIndex {
   int value = -1;
@@ -56,11 +104,47 @@ struct ControlIndex {
   return static_cast<std::size_t>(x.value);
 }
 
+/* Note [Runtime node kind tags]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+NodeKind must stay aligned with the integer tags emitted by the Haskell
+compiler.
+
+  Haskell (MetaSonic.Types.kindTag)    C++ (NodeKind)
+  ---------------------------------    --------------
+  kindTag KSinOsc = 1                  SinOsc = 1
+  kindTag KOut    = 2                  Out    = 2
+  kindTag KGain   = 3                  Gain   = 3
+
+The runtime does not perform any negotiation here.
+`rt_graph_add_node` can decode them directly.
+*/
+
 enum class NodeKind : int {
   SinOsc = 1,
   Out = 2,
   Gain = 3,
 };
+
+/* Note [Input references and control fallback]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Each node input slot can either be connected to another node's output
+or left unconnected.
+
+Connected inputs are stored as InputRef values and resolved through the
+source node's preallocated output buffer. Unconnected inputs yield an
+empty span, which the process kernel interprets as "fall back to the
+node's stored control value".
+
+This preserves the protocol used by the Haskell side:
+
+  * rnControls carries the default values
+  * RFrom edges become rt_graph_connect calls
+  * RConst values do not produce connections
+
+At the moment the runtime uses block-latched semantics for connected
+control-like inputs. That's temporary, just for demonstration and simplicity,
+while leaving open the future step to sample-accurate modulation.
+*/
 
 struct InputRef {
   NodeIndex src_node{};
@@ -68,10 +152,31 @@ struct InputRef {
   bool connected = false;
 };
 
+// Stateful payload for SinOsc. The oscillator remembers phase across
+// blocks and across callback invocations until the graph is cleared or
+// destroyed.
 struct SinOscState {
   float phase = 0.0f;
   bool phase_initialized = false;
 };
+
+/* Note [NodeRuntime layout]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+NodeRuntime is the concrete execution unit owned by RTGraph.
+
+Each node stores:
+
+  * its kind tag
+  * its control defaults
+  * its incoming edge references
+  * one or more output buffers, preallocated to max_frames
+  * optional per-node state
+
+The runtime chooses a structure-of-vectors style at the node boundary:
+controls, inputs, and outputs are each kept in dedicated vectors sized
+according to the node kind. This keeps configuration logic local to
+configure_node and keeps processing kernels compact.
+*/
 
 struct NodeRuntime {
   NodeKind kind = NodeKind::Out;
@@ -81,6 +186,7 @@ struct NodeRuntime {
   SinOscState sinosc{};
 };
 
+// View one output buffer as a span over the first nframes samples.
 [[nodiscard]] static std::span<float>
 output_span(NodeRuntime &node, PortIndex port, int nframes) noexcept {
   return {node.outputs[to_size(port)].data(),
@@ -93,6 +199,9 @@ output_span(const NodeRuntime &node, PortIndex port, int nframes) noexcept {
           static_cast<std::size_t>(nframes)};
 }
 
+// Resolve one connected input to the source node's output span.
+// An empty span means the input is unavailable and the caller should
+// fall back to the corresponding control value or silence.
 [[nodiscard]] static std::span<const float>
 resolve_input(const std::vector<NodeRuntime> &nodes, const NodeRuntime &dst,
               PortIndex input_index, int nframes) noexcept {
@@ -128,6 +237,21 @@ resolve_input(const std::vector<NodeRuntime> &nodes, const NodeRuntime &dst,
   return output_span(src, ref.src_port, nframes);
 }
 
+/* Note [Node configuration and preallocation]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+configure_node is part of graph loading, not realtime execution.
+
+Two jobs:
+
+  1. choose the shape of the node: control count, input count,
+     output count, and initial state
+  2. preallocate every output buffer to max_frames
+
+This separation is important. The architectural invariant is that the
+DSP loop performs no allocation. All buffer growth happens here while
+loading or reloading the graph.
+*/
+
 static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
   node.kind = kind;
   node.controls.clear();
@@ -160,6 +284,24 @@ static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
   }
 }
 
+/* Note [q_io stream wrapper]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+GraphAudioStream is the bridge between the dense runtime and
+q_io's PortAudio-backed callback stream.
+
+Its job is (deliberately) narrow:
+
+  * when the audio callback fires, run process_graph for the current
+    frame count
+  * copy the resulting output buses into q_io's non-interleaved output
+    channel spans
+  * set a one-way "started" flag once the callback has actually run
+
+Crucially, the callback does not call back into the Haskell side,
+take locks, or perform configuration work. The stream is just a realtime
+pull wrapper around the already-constructed RTGraph.
+*/
+
 struct GraphAudioStream : q::audio_stream {
   GraphAudioStream(RTGraph &graph, q::audio_device const &device,
                    std::size_t output_channels);
@@ -173,6 +315,22 @@ struct GraphAudioStream : q::audio_stream {
 
 } // namespace
 
+/* Note [RTGraph ownership]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+RTGraph is the sole owner of runtime state.
+
+Contains:
+
+  * the dense node array
+  * the maximum frame size used for all preallocations
+  * the currently active sample rate
+  * output buses that accumulate the contribution of Out nodes
+  * an optional realtime audio stream
+
+The Haskell side sees RTGraph only as an opaque pointer.
+All ownership, lifetime, and mutation live here.
+*/
+
 struct RTGraph {
   int capacity = 0;
   int max_frames = 0;
@@ -184,6 +342,7 @@ struct RTGraph {
 
 namespace {
 
+// Ensure the dense node vector is large enough to hold node_index.
 static void ensure_node_slot(RTGraph &g, NodeIndex node_index) {
   if (!valid(node_index)) {
     return;
@@ -194,6 +353,24 @@ static void ensure_node_slot(RTGraph &g, NodeIndex node_index) {
     g.nodes.resize(idx + 1);
   }
 }
+
+/* Note [Output bus semantics]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Out nodes do not write directly to a hardware device.
+
+Each Out node copies its input into its own node-local output
+buffer and then accumulates that signal into one runtime output bus,
+selected by control slot 0.
+
+This gives the runtime a useful intermediate abstraction:
+
+  * multiple Out nodes may sum onto the same bus
+  * offline processing can inspect buses without opening audio
+  * realtime output can map buses to device channels in a separate step
+
+The bus vectors are preallocated exactly like node outputs, so clearing
+and accumulation remain allocation-free inside the DSP loop.
+*/
 
 static void ensure_output_bus_count(RTGraph &g, std::size_t count) {
   if (g.output_buses.size() >= count) {
@@ -207,12 +384,27 @@ static void ensure_output_bus_count(RTGraph &g, std::size_t count) {
   }
 }
 
+// Zero the first nframes of each output bus before one block render.
 static void clear_output_buses(RTGraph &g, int nframes) noexcept {
   const std::size_t frames = static_cast<std::size_t>(nframes);
   for (auto &bus : g.output_buses) {
     std::fill_n(bus.begin(), frames, 0.0f);
   }
 }
+
+/* Note [SinOsc processing semantics]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+SinOsc currently implements a simple stateful oscillator with block-
+latched control inputs.
+
+  * frequency input: if connected, sample 0 overrides control 0
+  * phase input: if connected, sample 0 overrides control 1 only while
+    the oscillator is being initialized
+
+After initialization, phase advances continuously across blocks. This
+keeps the implementation aligned with the original prototype semantics:
+phase is an initial condition, not an audio-rate modulation target.
+*/
 
 static void process_sinosc(RTGraph &g, std::size_t node_idx,
                            int nframes) noexcept {
@@ -242,6 +434,19 @@ static void process_sinosc(RTGraph &g, std::size_t node_idx,
   }
 }
 
+/* Note [Gain processing semantics]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Gain is currently scalar gain with block-latched modulation.
+
+If input port 1 is connected, the kernel reads sample 0 from that input
+and uses it as the gain amount for the entire block. If no signal input
+is connected, the output is silence.
+
+As with SinOsc, this is a deliberate "simple now, elaborate later" design:
+the dataflow shape already supports future sample-accurate gain without
+changing the ABI!
+*/
+
 static void process_gain(RTGraph &g, std::size_t node_idx,
                          int nframes) noexcept {
   NodeRuntime &node = g.nodes[node_idx];
@@ -262,6 +467,8 @@ static void process_gain(RTGraph &g, std::size_t node_idx,
   }
 }
 
+// Copy the node's input into its local output, then accumulate that
+// signal into the chosen output bus.
 static void process_out(RTGraph &g, std::size_t node_idx,
                         int nframes) noexcept {
   NodeRuntime &node = g.nodes[node_idx];
@@ -291,6 +498,18 @@ static void process_out(RTGraph &g, std::size_t node_idx,
   }
 }
 
+/* Note [Execution order invariant]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The runtime processes nodes in storage order.
+
+This is correct because `metasonic` adds nodes in dense execution order,
+which itself comes from the validated topological order computed on the
+Haskell side. There is therefore no separate scheduler in this file.
+The dense node vector is already the "schedule".
+
+That simplicity is by design. Thus the name "tinysynth".
+*/
+
 static void process_graph(RTGraph &g, int nframes) noexcept {
   clear_output_buses(g, nframes);
 
@@ -316,6 +535,19 @@ GraphAudioStream::GraphAudioStream(RTGraph &graph_,
                       graph_.max_frames),
       graph(graph_) {}
 
+/* Note [Realtime channel mapping]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The q_io callback receives one non-interleaved output span per hardware
+channel.
+
+The runtime maps output buses to those channels as follows:
+
+  * if the graph has multiple buses, bus N feeds channel N when present
+  * if the graph has exactly one bus but the device has multiple output
+    channels, bus 0 is duplicated to every channel
+
+*/
+
 void GraphAudioStream::process(out_channels const &out) {
   started.store(true, std::memory_order_release);
 
@@ -340,6 +572,21 @@ void GraphAudioStream::process(out_channels const &out) {
   }
 }
 
+/* Note [Callback readiness signaling]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The runtime exposes rt_graph_wait_started so the Haskell side can wait
+until the realtime callback has actually executed.
+
+The audio callback itself cannot safely participate in heavy cross-
+language coordination. Instead it performs the smallest possible signal:
+
+  started.store(true)
+
+IMPORTANT:
+A separate, non-realtime waiting path polls that flag. This keeps the
+callback thread free of locks, I/O, and Haskell RTS interaction.
+*/
+
 bool GraphAudioStream::wait_started(
     std::chrono::milliseconds timeout) noexcept {
   if (timeout.count() < 0) {
@@ -360,6 +607,7 @@ bool GraphAudioStream::wait_started(
   return started.load(std::memory_order_acquire);
 }
 
+// Stop and release the active realtime stream, if any.
 static void stop_audio_stream(RTGraph &g) {
   if (!g.audio) {
     return;
@@ -368,6 +616,21 @@ static void stop_audio_stream(RTGraph &g) {
   g.audio->stop();
   g.audio.reset();
 }
+
+/* Note [Device selection policy]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+open_audio_stream chooses an output device using a small deterministic
+policy.
+
+  1. If the caller supplied a device id, try exactly that device.
+  2. Otherwise, prefer the PortAudio default output device.
+  3. If that fails, fall back to the first device with enough output
+     channels.
+
+The function returns a fully opened q_io stream or nullptr on failure.
+It does not start the stream; startup remains the responsibility of the
+C ABI entry point.
+*/
 
 static std::unique_ptr<GraphAudioStream>
 open_audio_stream(RTGraph &g, int requested_output_channels,
@@ -425,8 +688,13 @@ open_audio_stream(RTGraph &g, int requested_output_channels,
 
 } // namespace
 
+// ----------------------------------------------------------------
+// C ABI implementation
+// ----------------------------------------------------------------
+
 extern "C" {
 
+// Allocate one runtime graph handle. No nodes are configured yet.
 RTGraph *rt_graph_create(int capacity, int max_frames) {
   auto *g = new RTGraph{};
   g->capacity = std::max(0, capacity);
@@ -437,6 +705,7 @@ RTGraph *rt_graph_create(int capacity, int max_frames) {
   return g;
 }
 
+// Destroy the graph and any active audio stream.
 void rt_graph_destroy(RTGraph *g) {
   if (!g) {
     return;
@@ -444,6 +713,17 @@ void rt_graph_destroy(RTGraph *g) {
   stop_audio_stream(*g);
   delete g;
 }
+
+/* Note [Clear semantics]
+~~~~~~~~~~~~~~~~~~~~~~~~~
+rt_graph_clear is the graph-reload entry point.
+
+It stops active audio, resets the sample rate to the default placeholder
+value, removes all nodes and output buses, and preserves the graph handle
+for reuse. This matches the Haskell loading protocol, where a single
+RTGraph handle may be repeatedly cleared and repopulated by
+loadRuntimeGraph.
+*/
 
 void rt_graph_clear(RTGraph *g) {
   if (!g) {
@@ -459,6 +739,7 @@ void rt_graph_clear(RTGraph *g) {
   }
 }
 
+// Add or reconfigure one node at its dense runtime index.
 void rt_graph_add_node(RTGraph *g, int node_index, int node_kind) {
   if (!g) {
     return;
@@ -488,11 +769,13 @@ void rt_graph_add_node(RTGraph *g, int node_index, int node_kind) {
   ensure_node_slot(*g, idx);
   configure_node(g->nodes[to_size(idx)], kind, g->max_frames);
 
+  // Out nodes imply at least one runtime output bus exists.
   if (kind == NodeKind::Out) {
     ensure_output_bus_count(*g, 1);
   }
 }
 
+// Set one control slot on one node.
 void rt_graph_set_control(RTGraph *g, int node_index, int control_index,
                           float value) {
   if (!g) {
@@ -518,12 +801,15 @@ void rt_graph_set_control(RTGraph *g, int node_index, int control_index,
 
   node.controls[cidx] = value;
 
+  // For Out nodes, control 0 is the destination output bus.
+  // Growing the bus array here ensures the DSP loop never has to do it.
   if (node.kind == NodeKind::Out && cidx == 0 && value >= 0.0f) {
     const auto bus = static_cast<std::size_t>(static_cast<int>(value));
     ensure_output_bus_count(*g, bus + 1);
   }
 }
 
+// Connect one source output port to one destination input port.
 void rt_graph_connect(RTGraph *g, int src_index, int src_port, int dst_index,
                       int dst_port) {
   if (!g) {
@@ -554,6 +840,7 @@ void rt_graph_connect(RTGraph *g, int src_index, int src_port, int dst_index,
   dst_node.input_refs[dport] = InputRef{src, sp, true};
 }
 
+// Render one block offline into the graph's internal output buses.
 void rt_graph_process(RTGraph *g, int nframes) {
   if (!g) {
     return;
@@ -571,6 +858,19 @@ void rt_graph_process(RTGraph *g, int nframes) {
 
   process_graph(*g, nframes);
 }
+
+/* Note [Realtime startup]
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+rt_graph_start_audio opens and starts the q_io / PortAudio stream.
+
+output_channels controls the hardware channel count requested from the
+stream. If the caller passes a non-positive value, the runtime infers a
+channel count from the configured output buses, with a minimum of one.
+
+The function only succeeds once the stream is valid and started. A
+separate rt_graph_wait_started call can then wait until the callback has
+actually run.
+*/
 
 int rt_graph_start_audio(RTGraph *g, int output_channels, int device_id) {
   if (!g) {
@@ -603,6 +903,7 @@ int rt_graph_start_audio(RTGraph *g, int output_channels, int device_id) {
   return 0;
 }
 
+// Wait for the realtime callback to execute at least once.
 int rt_graph_wait_started(RTGraph *g, int timeout_ms) {
   if (!g || !g->audio) {
     return -100;
@@ -612,6 +913,7 @@ int rt_graph_wait_started(RTGraph *g, int timeout_ms) {
   return ok ? 0 : -2;
 }
 
+// Stop realtime audio if it is active.
 void rt_graph_stop_audio(RTGraph *g) {
   if (!g) {
     return;
