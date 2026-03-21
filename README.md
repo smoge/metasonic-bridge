@@ -84,7 +84,7 @@ keeping their architectural modularity.
 
 ## Quick start
 
-Requirements: GHC ≥ 9, a C++20 compiler (GCC or Clang), q_io, and PortAudio.
+Requirements: GHC (tested with GHC 9.10.3 / LTS 24.34), Stack, C++20 ompiler (GCC or Clang), PortAudio (must be installed separately), and q_io (included as a git submodule).
 
 ```sh
 stack build
