@@ -111,14 +111,13 @@ of it.
 
 ## Current state
 
-- Minimal node set
 - Block-based DSP execution
 - Static, precompiled graphs
-- Audio output integration in progress (q_io)
-- DSP layer grounded on q_lib
-
+- DSP layer grounded on q_lib 
+- Minimal node set (tinysynth includes q_lib "plugins" and will extend it)
 
 ---
 
-> *Before the sound breathes, the structure is decided.*
-> *Before the signal moves, the graph is already aligned.*
+>  *Before the sound breathes, the structure is decided.*
+>  *Before the signal moves, the graph is already aligned.*
+
