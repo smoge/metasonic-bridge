@@ -1,103 +1,99 @@
-# MetaSonic
+# MetaSonic Bridge
+
+Graph compiler and FFI layer for the MetaSonic audio system.
 
 MetaSonic is a research project exploring compiler architecture for real-time
-signal graphs with deterministic execution semantics. 
+signal graphs with deterministic execution semantics. This repository —
+`metasonic-bridge` — is a prototype implementation of its core pipeline:
+representing audio graphs in a strongly typed IR, stripping redundant nodes,
+and marshaling the result across a thin FFI boundary into C++20.
 
-This repository, metasonic-bridge, is a prototype implementation of that
-architecture. The source code is documented with Haddock comments and
-cross-reference notes that go into significantly more detail than this file.
+The source is documented with Haddock comments and cross-reference notes that go
+into significantly more detail than this file. For a conceptual picture of the
+system, read the code in pipeline order starting from
+[`src/MetaSonic/Types.hs`](./src/MetaSonic/Types.hs).
 
-For a detailed and conceptual picture of the system, read the code and comments
-in pipeline order, starting from ./src/MetaSonic/Types.hs.
-
----
-
-## Why "metasonic-bridge"
-
-This repository is one piece — but a fundamental one — of a larger system
-design. metasonic-bridge focuses on graph compilation: representing audio graphs
-in a strongly typed IR (intermediate representation), stripping away unnecessary
-elements, and marshaling the result across a thin FFI boundary into C++. 
-
-But it is only one layer. The two adjacent layers can each be developed
-independently:
-
-* metasonic — the Haskell DSL that sits above this layer. It can be developed
-with no FFI involvement whatsoever, and need not adopt the strong typing imposed
-by the bridge.
-* tinysynth — the audio engine, written entirely in C++20. Plugins are authored
-at this layer and can be built and tested purely in C++.
-
-The different modules in this repository roughly correspond to stages in the
-compilation pipeline. The bridge naturally requires that the Haskell and C++
-sides stay in sync — particularly when new tinysynth plugins are introduced —
-though there are plans to derive more of this synchronization from plugin
-metadata rather than hard-coding it.
-
----
-
-Most systems blur everything together.
-
-This one draws a line.
-
-Two worlds:
-
-* **Haskell** — builds, analyzes, compiles
-* **C++20** — executes DSP, deterministic and strict
-
-Pipeline:
+> *Don't run the graph. Compile it.*
 
 ```
 Haskell DSL → SynthGraph → GraphIR → RuntimeGraph → DSP Engine
 ```
 
-No symbolic lookups in the audio thread.
-No runtime graph solving.
-No “figure it out later.”
-
-Everything is resolved before the C++ layer.
-
+No symbolic lookups in the audio thread. No runtime graph solving.
+Everything is resolved before the C++ layer sees it.
 
 ---
 
-## Why this exists
+## Motivation
 
 Most audio environments combine graph composition, scheduling, signal
-processing, and state management into a single layer.
+processing, and state management into a single layer. Convenient at first — but
+complexity grows, and reasoning becomes difficult.
 
-Convenient at first - but complexity grows, reasoning and maintenance gets more
-difficult.
-
-MetaSonic separates them:
+MetaSonic draws a line:
 
 ```
 graph construction ≠ signal execution
 ```
 
-Graph building is a compiler problem. DSP is a runtime problem.
+Graph building is a compiler problem. DSP is a runtime problem. Two worlds:
+
+- **Haskell** — builds, analyzes, compiles
+- **C++20** — executes DSP, deterministic and strict
+
+You don't evaluate structure at runtime. You build, validate, order, compile —
+then execute. When audio starts, decisions are already made.
 
 ---
 
-## The idea
+## Architecture
 
-> *Don’t run the graph.*
-> *Compile it.*
+`metasonic-bridge` is one layer of a larger system. Each layer can be developed
+and tested independently:
 
-You don’t evaluate structure at runtime.
+```
+metasonic-core       DSL — no C++ dependencies, implemented in pure Haskell
+     ↓
+metasonic-bridge     graph compiler + FFI — Haskell to C++20
+     ↓
+tinysynth            real-time audio engine — pure C++20, depends on and extends q_lib
+     ↓
+metasonic-ui         Dear ImGui interface — visualization + parameter control
+```
 
-You:
+- **metasonic-core** defines the user-facing DSL. No FFI involvement. Type
+  discipline is the bridge's responsibility, not the DSL's.
+- **metasonic-bridge** compiles graphs into a strongly typed IR and
+  marshals across the FFI boundary.
+- **tinysynth** is the audio engine. Plugins are authored and tested entirely in
+  C++ — no Haskell toolchain required.
+- **metasonic-ui** provides real-time parameter control and audio visualization
+  through Dear ImGui. It links tinysynth directly for the hot path (knobs,
+  meters, FFT display) and `dlopen`s the bridge shared library for structural
+  operations (graph editing, recompilation).
 
-1. build
-2. validate
-3. order
-4. compile
-5. execute
+The modules in this repository roughly correspond to stages in the compilation
+pipeline. The bridge requires that the Haskell and C++ sides stay in sync —
+particularly when new tinysynth plugins are introduced — though there are plans
+to derive more of this synchronization from plugin metadata.
 
-When audio starts, decisions are already made.
+As the system stabilizes, all layers will live in a single monorepo while
+keeping their architectural modularity.
 
 ---
 
-## Minimal example
+## Quick start
+
+Requirements: GHC ≥ 9, a C++20 compiler (GCC or Clang), q_io, and PortAudio.
+
+```sh
+stack build
+stack exec metasonic-bridge
+```
+
+---
+
+## Syntax example
 
 ```haskell
 simpleGraph = runSynth $ do
@@ -105,44 +101,22 @@ simpleGraph = runSynth $ do
   out 0 osc
 ```
 
-A simple chain:
-
-```
-SinOsc → Out
-```
-
-But what runs is not this structure directly — it's a compiled version of it.
-
----
-
-## What this means
-
-The runtime is simple on purpose. It doesn't resolve graphs. 
-It doesn't schedule. It executes what was already decided.
+This builds a simple chain (`SinOsc → Out`), but what runs is not this
+structure directly — it's a compiled, validated, topologically ordered version
+of it.
 
 ---
 
 ## Current state
 
-* minimal node set 
-* block-based DSP execution
-* static, precompiled graph
-* audio output integration in progress (q_io)
-* DSP layer grounded on q_lib
+- Minimal node set
+- Block-based DSP execution
+- Static, precompiled graphs
+- Audio output integration in progress (q_io)
+- DSP layer grounded on q_lib
 
-This is a structural prototype of the MetaSonic approach.
-
----
-
-## More
-
-* Haddock documentation (comments) and Notes
-* ARCHITECTURE.md 
-* ROADMAP.md 
 
 ---
 
-> *Before the sound breathes,*
-> *the structure is decided.*
-> *Before the signal moves,*
-> *the graph is already aligned.*
+> *Before the sound breathes, the structure is decided.*
+> *Before the signal moves, the graph is already aligned.*

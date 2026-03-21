@@ -24,7 +24,6 @@ library
       MetaSonic.Compile
       MetaSonic.FFI
   other-modules:
-      Lib
       Paths_metasonic_bridge
   autogen-modules:
       Paths_metasonic_bridge
