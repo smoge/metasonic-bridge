@@ -268,7 +268,7 @@ static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
   case NodeKind::Out:
     node.controls.resize(1, 0.0f); // [bus]
     node.input_refs.resize(1);     // [signal_in]
-    node.outputs.resize(1);
+    // No outputs — Out accumulates directly into the bus
     break;
 
   case NodeKind::Gain:
