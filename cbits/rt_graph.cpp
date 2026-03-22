@@ -3,9 +3,6 @@
 // Description : runtime DSP engine and realtime audio backend
 // ================================================================
 //
-// This file implements the C ABI declared in rt_graph.h and the
-// runtime that executes compiled graphs.
-//
 // On the Haskell side, compilation ends at RuntimeGraph: a dense,
 // execution-ordered list of nodes whose inputs already refer to
 // concrete runtime indices. On the C++ side, this file turns that
@@ -39,10 +36,9 @@
 
 namespace q = cycfi::q;
 
-// Forward declaration so the internal q_io stream wrapper
 struct RTGraph;
 
-/* Note [Dense runtime model]
+/* Note [Dense runtime model
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The runtime operates entirely on dense indices.
 
