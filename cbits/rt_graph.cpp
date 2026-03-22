@@ -467,34 +467,45 @@ static void process_gain(RTGraph &g, std::size_t node_idx,
   }
 }
 
-// Copy the node's input into its local output, then accumulate that
-// signal into the chosen output bus.
+/* Note [Out node processing — direct bus accumulation]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Out is a pure sink: it accumulates its input signal into a shared
+output bus selected by control slot 0.
+
+Previously, process_out performed two passes over the frame data:
+
+  1. copy the resolved input into the node's local output buffer
+  2. accumulate that local buffer into the destination bus
+
+The local buffer was write-only dead storage — Out is a terminal node
+for now, and no downstream node ever reads its output port. The new
+version eliminates the intermediate copy and accumulates the resolved
+input directly into the bus.
+
+If the input is unconnected or the bus index is invalid, the node
+contributes nothing. Multiple Out nodes may target the same
+bus.
+
+This design also aligns with the (not yet implemented) bus-routing
+model: when cross-graph communication arrives, a dedicated BusIn node
+will read from the bus, NOT from the Out output port. The bus is the
+shared memory abstraction (just like SC3's Out.ar & In.ar
+design). Keeping Out as a pure accumulator avoids ambiguity.
+*/
 static void process_out(RTGraph &g, std::size_t node_idx,
                         int nframes) noexcept {
   NodeRuntime &node = g.nodes[node_idx];
-  auto out = output_span(node, PortIndex{0}, nframes);
   const auto in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
-
-  if (in.empty()) {
-    std::fill(out.begin(), out.end(), 0.0f);
-  } else {
-    std::copy_n(in.begin(), static_cast<std::size_t>(nframes), out.begin());
-  }
+  if (in.empty())
+    return;
 
   const int bus = static_cast<int>(node.controls[0]);
-  if (bus < 0) {
+  if (bus < 0 || static_cast<std::size_t>(bus) >= g.output_buses.size())
     return;
-  }
 
-  const std::size_t bus_index = static_cast<std::size_t>(bus);
-  if (bus_index >= g.output_buses.size()) {
-    return;
-  }
-
-  auto &dst = g.output_buses[bus_index];
+  auto &dst = g.output_buses[static_cast<std::size_t>(bus)];
   for (int i = 0; i < nframes; ++i) {
-    const std::size_t fi = static_cast<std::size_t>(i);
-    dst[fi] += out[fi];
+    dst[static_cast<std::size_t>(i)] += in[static_cast<std::size_t>(i)];
   }
 }
 
