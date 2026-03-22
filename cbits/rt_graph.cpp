@@ -130,10 +130,9 @@ enum class NodeKind : int {
 Each node input slot can either be connected to another node's output
 or left unconnected.
 
-Connected inputs are stored as InputRef values and resolved through the
-source node's preallocated output buffer. Unconnected inputs yield an
-empty span, which the process kernel interprets as "fall back to the
-node's stored control value".
+An InputRef is considered connected when its src_node index is valid
+(non-negative). The default-constructed sentinel value (-1) represents
+an unconnected slot.
 
 This preserves the protocol used by the Haskell side:
 
@@ -168,7 +167,7 @@ Each node stores:
   * its kind tag
   * its control defaults
   * its incoming edge references
-  * one or more output buffers, preallocated to max_frames
+  * output buffers (when applicable), preallocated to max_frames
   * optional per-node state
 
 The runtime chooses a structure-of-vectors style at the node boundary:
@@ -357,8 +356,7 @@ static void ensure_node_slot(RTGraph &g, NodeIndex node_index) {
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Out nodes do not write directly to a hardware device.
 
-Each Out node copies its input into its own node-local output
-buffer and then accumulates that signal into one runtime output bus,
+Each Out node accumulates its input signal directly into one runtime output bus,
 selected by control slot 0.
 
 This gives the runtime a useful intermediate abstraction:
@@ -563,7 +561,6 @@ void GraphAudioStream::process(out_channels const &out) {
 
   // To be defensive, clamp nframes to max_frames here. (PA spec says the
   // callback can receive different sizes, but we can't handle that.)
-  // const int nframes = static_cast<int>(out.frames.size());
   const int nframes =
       std::min(static_cast<int>(out.frames.size()), graph.max_frames);
   process_graph(graph, nframes);
