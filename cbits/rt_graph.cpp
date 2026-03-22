@@ -551,7 +551,11 @@ The runtime maps output buses to those channels as follows:
 void GraphAudioStream::process(out_channels const &out) {
   started.store(true, std::memory_order_release);
 
-  const int nframes = static_cast<int>(out.frames.size());
+  // To be defensive, clamp nframes to max_frames here. (PA spec says the
+  // callback can receive different sizes, but we can't handle that.)
+  // const int nframes = static_cast<int>(out.frames.size());
+  const int nframes =
+      std::min(static_cast<int>(out.frames.size()), graph.max_frames);
   process_graph(graph, nframes);
 
   for (std::size_t ch = 0; ch < out.size(); ++ch) {
