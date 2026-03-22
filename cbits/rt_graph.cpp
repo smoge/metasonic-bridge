@@ -149,7 +149,6 @@ while leaving open the future step to sample-accurate modulation.
 struct InputRef {
   NodeIndex src_node{};
   PortIndex src_port{};
-  bool connected = false;
 };
 
 // Stateful payload for SinOsc. The oscillator remembers phase across
@@ -215,7 +214,7 @@ resolve_input(const std::vector<NodeRuntime> &nodes, const NodeRuntime &dst,
   }
 
   const InputRef &ref = dst.input_refs[idx];
-  if (!ref.connected || !valid(ref.src_node) || !valid(ref.src_port)) {
+  if (!valid(ref.src_node) || !valid(ref.src_port)) {
     return {};
   }
 
@@ -852,7 +851,7 @@ void rt_graph_connect(RTGraph *g, int src_index, int src_port, int dst_index,
     return;
   }
 
-  dst_node.input_refs[dport] = InputRef{src, sp, true};
+  dst_node.input_refs[dport] = InputRef{src, sp};
 }
 
 // Render one block offline into the graph's internal output buses.
