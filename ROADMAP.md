@@ -45,7 +45,7 @@ Known limitations:
 
 ---
 
-## 1 — Q-Backed Node Registry
+## 1 — Node Registry
 
 Replace hand-written DSP with Q primitives and expand the node roster to cover
 basic synthesis first.
@@ -55,12 +55,11 @@ basic synthesis first.
 The current `process_sinosc` calls `std::sin` every sample and owns phase as
 runtime state. Q's `sin_osc` uses a lookup table, avoids expensive real-time
 trig, and expects the exact phase-state/waveform-generation separation the
-runtime already has.
+runtime already has. 
 
 ### 1.2 Add bandlimited oscillators
 
-Wire up Q's PolyBLEP-based `saw_osc`, `square_osc`, and `pulse_osc`. This is the
-single fastest jump from "prototype" to "sounds like a real synth engine."
+Wire up Q's PolyBLEP-based `saw_osc`, `square_osc`, and `pulse_osc`. 
 
 ### 1.3 Add `biquad` / lowpass filter
 
@@ -85,8 +84,8 @@ Use Q's `dynamic_smoother` at the control-bus boundary so UI/MIDI control
 updates arrive at control rate, get smoothed once, and feed sample-rate regions
 cleanly. This gives "lag" behavior without complicating the graph language.
 
-**Milestone:** A compiled graph can describe a subtractive voice (oscillator →
-filter → envelope → output) using Q-backed nodes.
+A compiled graph can describe a subtractive voice: oscillator → filter →
+envelope → output.
 
 ---
 
@@ -124,7 +123,7 @@ struct Server {
 
 ### 2.2 Instance lifecycle
 
-- **Allocate** a `GraphInstance` from a `MetaDef`, initializing per-node Q state
+- **Allocate** a `GraphInstance` from a `MetaDef`, initializing per-node state
 - **Set controls** on a live instance (frequency, gate, filter cutoff, …)
 - **Release** an instance (gate-off triggers envelope release; instance freed when silent).
 - **Free** immediately.
@@ -141,18 +140,18 @@ bus dependencies — but unlike SuperCollider, the compiler can derive safe
 ordering from `Eff` annotations (`BusRead`, `BusWrite`, `BufRead`, `BufWrite`)
 rather than requiring the user to manage node order manually.
 
-**Milestone:** tinysynth can host multiple simultaneous voices from the same or
-different MetaDefs, routed through global buses.
+`tinysynth` can host multiple simultaneous voices from the same or different
+MetaDefs, routed through global buses.
 
 ---
 
 ## Phase 3 — Polyphony and MIDI
 
-**Goal:** Real-time voice allocation driven by MIDI input.
+Real-time voice allocation driven by MIDI input.
 
 ### 3.1 Voice allocator
 
-A C++-side `VoiceAllocator` that maps note-on events to `GraphInstance`
+A C++ side `VoiceAllocator` that maps note-on events to `GraphInstance`
 allocation and note-off events to envelope release. Voice stealing policy
 (oldest, quietest, etc.) lives here.
 
@@ -160,14 +159,15 @@ allocation and note-off events to envelope release. Voice stealing policy
 
 Use Q's typed MIDI stack — `note_on`, `note_off`, CC, pitch-bend messages,
 processor concept, and MIDI input stream dispatch. Note events stay in C++;
-Haskell compiles structure, C++ owns live note lifetimes.
+Haskell compiles structure, C++ owns live note lifetimes. Haskell does not need
+to send MIDI events to `tinysynth`, unlike SC3.
 
 ### 3.3 Per-voice control mapping
 
 CC and pitch-bend map to instance control inputs via `dynamic_smoother`.
-Velocity maps to envelope or gain.
+Velocity maps to envelope or gain. 
 
-Milestone: Play a polyphonic MetaSonic instrument from a MIDI controller.
+- Play a polyphonic MetaSonic instrument from a MIDI controller.
 
 ---
 
@@ -195,18 +195,18 @@ sample-rate and block-rate scheduling units.
 
 ### 4.4 Region-level parallelism
 
-Independent regions (no shared bus hazards) can run on separate threads. This is
-cleaner than SuperNova's ParGroup model because hazard analysis is structural,
-not manual.
+Independent regions (no shared bus hazards) can run on separate threads. Another
+design difference from sc3/supernova: this is cleaner than SuperNova's ParGroup
+model because hazard analysis is structural, not manual.
 
-Milestone: The runtime schedules fused, rate-aware regions instead of individual
-nodes, with measurable performance improvement.
+The runtime schedules fused, rate-aware regions instead of individual nodes,
+with measurable performance improvement.
 
 ---
 
 ## 5 — Hot Graph Replacement
 
-Replace a running MetaDef with a recompiled version without audible glitches.
+Replace a running MetaDef with a recompiled version **without audible glitches**.
 
 ### 5.1 RCU-based topology swap
 
@@ -219,14 +219,14 @@ block boundary; old instance state is migrated where node identity is preserved.
 Define which node states survive a hot swap (phase continuity for oscillators,
 filter memory, envelope position) and which are reinitialized.
 
-**Milestone:** Edit a graph in the Haskell DSL, recompile, and hear the change
-without restarting audio.
+Edit a graph in the Haskell DSL, recompile, and hear the change without
+restarting audio.
 
 ---
 
 ## Phase 6 — Extended DSP and Ecosystem
 
-Lower priority, reserved for when the core is stable.
+Lower priority, hold implementation until core is more stable.
 
 - **Spectral processing:** Streaming DFT nodes for vocoder, spectral freeze,
   convolution.
@@ -243,9 +243,9 @@ Lower priority, reserved for when the core is stable.
 
 1. **Haskell compiles, C++ executes.** All graph semantics, rate inference,
    effect analysis, and topological ordering happen before the FFI boundary. The
-   C++ runtime is intentionally as simple as possible at each stage.
+   C++ runtime is intentionally _as simple as possible_ at each stage.
 
-2. **Q is the DSP substrate, not the architecture.** Q is just the starting
+2. **Q is DSP substrate, not architecture.** Q is just the starting
    point, it provides oscillators, filters, envelopes, delays, smoothing, audio
    I/O, and MIDI. It does not own graph topology, scheduling, or instance
    management.
@@ -256,13 +256,13 @@ Lower priority, reserved for when the core is stable.
    proof of safe execution.
 
 4. **No symbolic lookups on the audio thread.** Dense indices, pre-resolved
-   order, pre-allocated state. This is already true and must stay true at every
+   order, pre-allocated state. This is already true and _must_ stay true at every
    stage.
 
 5. **Compiler-derived ordering beats manual ordering.** SuperCollider requires
    users to manage node order and group structure to avoid bus-dependency bugs.
    MetaSonic can compute safe ordering from effect annotations, giving the same
-   flexibility with much less runtime superstition.
+   flexibility with much _less_ runtime superstition.
 
 6. **Regions are the scheduling unit, not nodes.** Individual UGens are too
    fine-grained for efficient scheduling. Fusion, SIMD, and threading all target
