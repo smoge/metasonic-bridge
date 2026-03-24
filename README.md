@@ -11,7 +11,9 @@ and marshaling the result across a thin FFI boundary into C++20.
 The source is documented with Haddock comments and cross-reference notes that go
 into significantly more detail than this file. For a conceptual picture of the
 system, read the code in pipeline order starting from
-[`src/MetaSonic/Types.hs`](./src/MetaSonic/Types.hs).
+[`src/MetaSonic/Types.hs`](./src/MetaSonic/Types.hs). 
+
+Also, see ROADMAP.md for updated progress and next planned steps.
 
 > *Don't run the graph. Compile it.*
 
