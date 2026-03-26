@@ -46,7 +46,7 @@ jobs:
 
             - name: Generate site
               working-directory: blog
-              run: cabal run blog -- build
+              run: cabal run metasonic-blog -- build
 
             - name: Upload artifact
               uses: actions/upload-pages-artifact@v3
