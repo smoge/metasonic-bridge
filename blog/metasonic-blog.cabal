@@ -1,0 +1,32 @@
+cabal-version:       2.4
+
+name:                metasonic-blog
+version:             0.1.0.0
+-- synopsis:
+-- description:
+homepage:            https://github.com/githubuser/metasonic-blog#readme
+license:             BSD-3-Clause
+license-file:        LICENSE
+author:              Bernardo Barros
+maintainer:          example@example.com
+copyright:           2026 Bernardo Barros
+category:            Web
+build-type:          Simple
+extra-source-files:  README.md
+                     CHANGELOG.md
+
+executable metasonic-blog
+  main-is:             site.hs
+  default-language:    Haskell2010
+  build-depends:       base >= 4.14 && < 5,
+                       hakyll >= 4.15 && < 4.17
+  ghc-options:         -Wall
+                       -Wcompat
+                       -Widentities
+                       -Wincomplete-record-updates
+                       -Wincomplete-uni-patterns
+                       -Wmissing-export-lists
+                       -Wmissing-home-modules
+                       -Wpartial-fields
+                       -Wredundant-constraints
+                       -threaded

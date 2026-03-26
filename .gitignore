@@ -17,6 +17,7 @@ cabal.project.local
 cabal.project.local~
 cabal.project.freeze
 
+
 ############################################################
 # GHC artifacts
 ############################################################
@@ -120,3 +121,31 @@ result-*
 
 .env
 .envrc
+
+
+############################################################
+# Blog files
+############################################################
+
+blog/_cache/
+blog/_site/**
+blog/dist/
+blog/.stack-work/
+blog/dist-newstyle/
+blog/cabal.project.local
+blog/*~
+blog/*.tmp
+blog/*.temp
+blog/*.swp
+blog/*.swo
+blog/*.log
+blog/_cache/*
+blog/stack.yaml.lock
+
+############################################################
+# Whatever else I might have missed
+############################################################
+
+checks.json
+
+stack.yaml.lock

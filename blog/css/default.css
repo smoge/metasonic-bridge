@@ -1,0 +1,263 @@
+/* dark theme */
+
+:root {
+    --fg: #c9d1d9;
+    --fg-bright: #e6edf3;
+    --bg: #0d1117;
+    --bg-raised: #161b22;
+    --accent: #58a6ff;
+    --accent-dim: #388bfd;
+    --muted: #8b949e;
+    --border: #21262d;
+    --code-bg: #1c2128;
+    --code-fg: #c9d1d9;
+    --link-hover: #79c0ff;
+    --blockquote-border: #388bfd;
+    --max-width: 42rem;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    font-size: 1rem;
+    line-height: 1.65;
+    color: var(--fg);
+    background: var(--bg);
+    max-width: var(--max-width);
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+}
+
+/* Navigation */
+header nav {
+    margin-bottom: 2rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 1.25rem;
+    flex-wrap: wrap;
+}
+
+header nav a {
+    color: var(--accent);
+    text-decoration: none;
+    font-weight: 600;
+    font-size: 0.95rem;
+    letter-spacing: 0.01em;
+}
+
+header nav a:hover {
+    color: var(--link-hover);
+    text-decoration: underline;
+}
+
+/* Headings */
+h1 {
+    font-size: 1.6rem;
+    color: var(--fg-bright);
+    margin-bottom: 1.5rem;
+    font-weight: 700;
+}
+
+h2 {
+    font-size: 1.3rem;
+    color: var(--fg-bright);
+    margin: 2.25rem 0 0.75rem;
+    font-weight: 600;
+}
+
+h3 {
+    font-size: 1.1rem;
+    color: var(--fg-bright);
+    margin: 1.5rem 0 0.5rem;
+    font-weight: 600;
+}
+
+/* Body text */
+main p {
+    margin-bottom: 1rem;
+}
+
+main ul,
+main ol {
+    margin: 0.5rem 0 1rem 1.5rem;
+}
+
+main li {
+    margin-bottom: 0.35rem;
+}
+
+/* Links */
+a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+a:hover {
+    color: var(--link-hover);
+    text-decoration: underline;
+}
+
+/* Emphasis */
+strong {
+    color: var(--fg-bright);
+}
+
+/* Code */
+code {
+    font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
+    font-size: 0.88em;
+    color: var(--code-fg);
+    background: var(--code-bg);
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+}
+
+pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 1rem;
+    overflow-x: auto;
+    border-radius: 6px;
+    margin: 1.25rem 0;
+    line-height: 1.45;
+}
+
+pre code {
+    background: none;
+    border: none;
+    padding: 0;
+}
+
+/* Blockquotes */
+blockquote {
+    border-left: 3px solid var(--blockquote-border);
+    padding: 0.5rem 0 0.5rem 1rem;
+    margin: 1.25rem 0;
+    color: var(--muted);
+    font-style: italic;
+}
+
+blockquote p:last-child {
+    margin-bottom: 0;
+}
+
+/* Horizontal rules */
+hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 2rem 0;
+}
+
+/* Post metadata */
+.post-meta {
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin-bottom: 1.5rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.post-tags {
+    font-size: 0.85rem;
+}
+
+/* Post list (index / archive) */
+.post-list {
+    list-style: none;
+    padding: 0;
+}
+
+.post-list li {
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--border);
+}
+
+.post-list li:last-child {
+    border-bottom: none;
+}
+
+.post-list .post-date {
+    color: var(--muted);
+    font-size: 0.88rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.post-list a {
+    font-weight: 600;
+    color: var(--fg-bright);
+}
+
+.post-list a:hover {
+    color: var(--accent);
+}
+
+.post-list .post-description {
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin: 0.25rem 0 0 0;
+    line-height: 1.5;
+}
+
+/* Footer */
+footer {
+    margin-top: 3rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+footer a {
+    color: var(--muted);
+}
+
+footer a:hover {
+    color: var(--accent);
+}
+
+/* Selection */
+::selection {
+    background: var(--accent-dim);
+    color: var(--fg-bright);
+}
+
+/* Scrollbar (webkit) */
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--muted);
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+    body {
+        padding: 1rem;
+    }
+
+    h1 {
+        font-size: 1.35rem;
+    }
+
+    h2 {
+        font-size: 1.15rem;
+    }
+}
