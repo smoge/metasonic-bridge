@@ -13,7 +13,9 @@ into significantly more detail than this file. For a conceptual picture of the
 system, read the code in pipeline order starting from
 [`src/MetaSonic/Types.hs`](./src/MetaSonic/Types.hs). 
 
-Also, see ROADMAP.md for updated progress and next planned steps.
+See ROADMAP.md for updated progress and next planned steps.
+
+Also, you can go deeper into design discussion and reasoning checking the [blog](https://smoge.github.io/metasonic-brigde).
 
 > *Don't run the graph. Compile it.*
 
