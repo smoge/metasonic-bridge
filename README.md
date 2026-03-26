@@ -15,7 +15,7 @@ system, read the code in pipeline order starting from
 
 See ROADMAP.md for updated progress and next planned steps.
 
-Also, you can go deeper into design discussion and reasoning checking the [blog](https://smoge.github.io/metasonic-brigde).
+Also, you can go deeper into design discussion and reasoning checking the [blog](https://smoge.github.io/metasonic-bridge).
 
 > *Don't run the graph. Compile it.*
 
