@@ -134,9 +134,7 @@ the C ABI.
 
 The pipeline is already pointing that way — symbolic `NodeID`s lowered to
 dense `NodeIndex` values, transferred across a deliberately small ABI. But
-the Haskell/C++ tag map is already drifting. Tag `4` means one thing in
-Haskell and another in C++. If that stands, we do not have a language. We
-have folklore with speakers attached.
+the Haskell/C++ tag map is already drifting. 
 
 Design change: freeze and version the contract before adding more nodes.
 Add machine-checked compatibility tests between Haskell and C++.
