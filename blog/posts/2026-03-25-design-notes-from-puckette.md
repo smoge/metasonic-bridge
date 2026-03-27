@@ -284,29 +284,22 @@ These are the questions not answered by design changes above:
 - How should regions relate to scheduling? Should region formation be
   informed by temporal constraints (e.g., "this subgraph only runs when
   triggered")?
-- What is the IR? Serializable format? Binary protocol? It needs to
-  be frozen, versioned, and documented as a _first-class_ artifact.
 - Can the DSL express temporal structure, or is the absence of time a
   deliberate stance?
 
 ### Runtime
 
-- What latency budget is acceptable for interactive use?
-- How does the runtime handle polyphony and voice allocation? 
 - Is tinysynth only a runtime behind the Haskell compiler, or should it be
   embeddable independently?
 
 ### Human interface
 
-- How does a performer interact with a running graph? (MIDI, OSC, Code
-  editing, etc.)
 - What are the signature musical affordances that should become the
   project's "identity"?
 
 ### Persistence & modularity
 
 - What is the serialization format for compiled graphs? Are we good already? 
-- How does the project relate to existing ecosystems? 
 
 ---
 
@@ -314,11 +307,8 @@ These are the questions not answered by design changes above:
 
 - **Not an environment.** No editor, no project format, no transport. Those
   are _adapter_ layers.
-- **Not a replacement for Max, Pd, or SuperCollider.** It operates at a
-  different level. Either below them as a kernel compiler, or alongside them as
-  a plugin source.
 - **Not a finished language.** It is a promising compiler skeleton. The
-  reactive, general-purpose music language Puckette describes as missing
-  does not exist yet. 
-- **Not neutral.** It has biases. They are documented above. Let's try to escape
-  from them if we can.
+  reactive, general-purpose music language Puckette describes as missing does
+  not exist. Although, we have both Haskell and C++ (stable languages) systems
+  available for both the DSL and runtime. 
+- **Not neutral.** It has biases. They should be document them honestly. 
