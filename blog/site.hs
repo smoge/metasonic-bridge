@@ -33,7 +33,7 @@ main = hakyll $ do
                 >>= relativizeUrls
 
     -- Archive page
-    match "archive.html" $ do
+    match "templates/archive.html" $ do
         route idRoute
         compile $ do
             posts <- recentFirst =<< loadAll "posts/*"
