@@ -204,9 +204,9 @@ Add:
   allocator)
 
 Those three alone shift our project from "typed signal chain compiler" toward
-"system for building instruments and responsive musical agents." The key is not
-quantity. It is choosing primitives that change what is musically easy to
-discover.
+"system for building instruments and responsive musical agents." The q_lib
+already offers us such primitives. The key is not quantity. It is choosing
+primitives that change what is musically easy to discover.
 
 ### Make immediacy a requirement
 
