@@ -88,9 +88,10 @@ keeping their architectural modularity.
 
 ## Quick start
 
-Requirements: GHC (tested with GHC 9.10.3 / LTS 24.34), Stack, C++20 compiler
-(GCC or Clang), PortAudio (must be installed separately), and q_io (included as
-a git submodule).
+Requirements: GHC (tested with GHC 9.10.3), Stack (for deterministic Haskell
+dependencies, presently stackage lts-24.34), C++20 compiler (GCC or Clang),
+PortAudio (must be installed separately), and Q C++20 library (infra, q_lib and
+q_io, included as a git submodules here).
 
 ```sh
 stack build
