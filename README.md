@@ -8,14 +8,14 @@ signal graphs with deterministic execution semantics. This repository —
 representing audio graphs in a strongly typed IR, stripping redundant nodes,
 and marshaling the result across a thin FFI boundary into C++20.
 
-The source is documented with Haddock comments and cross-reference notes that go
-into significantly more detail than this file. For a conceptual picture of the
+The source is documented with Haddock comments and cross-reference notes that
+cover significantly more detail than this file. For a conceptual picture of the
 system, read the code in pipeline order starting from
-[`src/MetaSonic/Types.hs`](./src/MetaSonic/Types.hs). 
+[`src/MetaSonic/Types.hs`](./src/MetaSonic/Types.hs).
 
-See ROADMAP.md for updated progress and next planned steps.
-
-Also, you can go deeper into design discussion and reasoning checking the [blog](https://smoge.github.io/metasonic-bridge).
+See [ROADMAP.md](./ROADMAP.md) for current progress and next planned steps.
+For deeper design discussion and reasoning, see the
+[blog](https://smoge.github.io/metasonic-bridge).
 
 > *Don't run the graph. Compile it.*
 
@@ -88,12 +88,20 @@ keeping their architectural modularity.
 
 ## Quick start
 
-Requirements: GHC (tested with GHC 9.10.3), Stack (for deterministic Haskell
-dependencies, presently stackage lts-24.34), C++20 compiler (GCC or Clang),
-PortAudio (must be installed separately), and Q C++20 library (infra, q_lib and
-q_io, included as a git submodules here).
+### Requirements
+
+- **GHC** — tested with 9.10.3
+- **Stack** — for deterministic dependency management (resolver: lts-24.34)
+- **C++20 compiler** — GCC or Clang
+- **PortAudio** — must be installed separately on your system
+- **Q** (C++20 library) — infra, q_lib, and q_io modules, included as git
+  submodules
+
+### Build and run
 
 ```sh
+git clone --recurse-submodules https://github.com/smoge/metasonic-bridge.git
+cd metasonic-bridge
 stack build
 stack exec metasonic-bridge
 ```
