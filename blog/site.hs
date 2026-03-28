@@ -10,6 +10,10 @@ main = hakyll $ do
         route   idRoute
         compile compressCssCompiler
 
+    match "img/*" $ do
+        route   idRoute
+        compile copyFileCompiler
+
     -- Individual posts
     match "posts/*" $ do
         route $ setExtension "html"

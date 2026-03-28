@@ -261,3 +261,24 @@ footer a:hover {
         font-size: 1.15rem;
     }
 }
+
+
+/* Images */
+main img {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 1.25rem 0;
+    border-radius: 6px;
+}
+
+figure {
+    margin: 1.5rem 0;
+}
+
+figcaption {
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-style: italic;
+    margin-top: 0.5rem;
+}
