@@ -131,9 +131,15 @@ fanOutGraph = runSynth $ do
   out 1 g2
 ```
 
-This builds a simple chain (`SinOsc → Out`), but what runs is not this
-structure directly — it's a compiled, validated, topologically ordered version
-of it.
+This builds three small graphs — a minimal oscillator (`SinOsc → Out`), a simple
+chain (`SinOsc → Gain → Out`), and a fan-out (`SinOsc → Gain × 2 → Out × 2`) —
+but what actually runs is a compiled, validated, topologically ordered version
+of each.
+
+This syntax belongs to `metasonic-bridge` — the compilation layer that
+constructs IR nodes and lowers them to C++. The authoring DSL in
+`metasonic-core` sits above this, offering a _fun_ interface while compiling
+down to the same bridge primitives.
 
 ---
 
