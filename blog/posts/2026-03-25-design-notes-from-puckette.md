@@ -212,7 +212,7 @@ difference is that the second one has joints that *adapt* — connectors whose
 geometry depends on the forces running through them. That is the kind of
 primitive we are missing.
 
-![Fixed joints vs adaptive joints](https://raw.githubusercontent.com/smoge/metasonic-bridge/refs/heads/main/blog/img/tinkertoys2.png)
+![Fixed joints vs adaptive joints](https://raw.githubusercontent.com/smoge/metasonic-bridge/refs/heads/main/blog/img/tinkertoys3.png)
 *Left: the Tinkertoy model — fixed hubs, rigid dowels, one-way signal flow.
 Right: the three primitives that change the character of the system — a delay
 cell that loops back on itself, an onset detector that senses what passes
