@@ -192,7 +192,8 @@ stream forever.
 A runtime that offers sine, saw, gain, out, and biquads is a useful base, but
 it is still a Tinkertoy set in software clothing.
 
-![Tinkertoy set](https://raw.githubusercontent.com/smoge/metasonic-bridge/refs/heads/main/blog/img/tinkertoys1.png)
+![Tinkertoy](https://raw.githubusercontent.com/smoge/metasonic-bridge/refs/heads/main/blog/img/tinkertoys1.png)
+
 *The canonical synthesis toolkit: round hubs in a few fixed sizes (oscillators,
 filters, envelopes) joined by straight wooden dowels (audio and control wires).
 You compose by choosing which hole to stick the rod into — never by reshaping
@@ -212,7 +213,8 @@ difference is that the second one has joints that *adapt* — connectors whose
 geometry depends on the forces running through them. That is the kind of
 primitive we are missing.
 
-![Fixed joints vs adaptive joints](https://raw.githubusercontent.com/smoge/metasonic-bridge/refs/heads/main/blog/img/tinkertoys3.png)
+![Fixed joints vs adaptive joints](https://raw.githubusercontent.com/smoge/metasonic-bridge/refs/heads/main/blog/img/tinckertoys3.png)
+
 *Left: the Tinkertoy model — fixed hubs, rigid dowels, one-way signal flow.
 Right: the three primitives that change the character of the system — a delay
 cell that loops back on itself, an onset detector that senses what passes
