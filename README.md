@@ -108,12 +108,27 @@ stack exec metasonic-bridge
 
 ---
 
-## Syntax example
+## metasonic-bridge SynthGraph syntax 
 
 ```haskell
+simpleGraph :: SynthGraph
 simpleGraph = runSynth $ do
   osc <- sinOsc 440.0 0.0
   out 0 osc
+
+chainGraph  :: SynthGraph
+chainGraph = runSynth $ do
+  osc <- sinOsc 440.0 0.0
+  g   <- gain osc 0.5
+  out 0 g
+
+fanOutGraph :: SynthGraph 
+fanOutGraph = runSynth $ do
+  osc <- sinOsc 440.0 0.0
+  g1  <- gain osc 0.3
+  g2  <- gain osc 0.7
+  out 0 g1
+  out 1 g2
 ```
 
 This builds a simple chain (`SinOsc → Out`), but what runs is not this
