@@ -108,7 +108,7 @@ stack exec metasonic-bridge
 
 ---
 
-## metasonic-bridge SynthGraph syntax 
+## SynthGraph syntax 
 
 ```haskell
 simpleGraph :: SynthGraph
@@ -138,7 +138,7 @@ of each.
 
 This syntax belongs to `metasonic-bridge` — the compilation layer that
 constructs IR nodes and lowers them to C++. The authoring DSL in
-`metasonic-core` sits above this, offering a _fun_ interface while compiling
+`metasonic-core` sits above this, offering alternative interfaces while compiling
 down to the same bridge primitives.
 
 ---
