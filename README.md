@@ -6,7 +6,7 @@ MetaSonic is a research project exploring compiler architecture for real-time
 signal graphs with deterministic execution semantics. This repository —
 `metasonic-bridge` — is a prototype implementation of its core pipeline:
 representing audio graphs in a strongly typed IR, stripping redundant nodes,
-and marshaling the result across a thin FFI boundary into C++20.
+and marshaling the result across a thin FFI boundary into C++.
 
 The source is documented with Haddock comments and cross-reference notes that
 cover significantly more detail than this file. For a conceptual picture of the
@@ -94,7 +94,7 @@ keeping their architectural modularity.
 - **Stack** — for deterministic dependency management (resolver: lts-24.34)
 - **C++20 compiler** — GCC or Clang
 - **PortAudio** — must be installed separately on your system
-- **Q** (C++20 library) — infra, q_lib, and q_io modules, included as git
+- **Q** (C++20 library) — infra and q_lib modules, included as git
   submodules
 
 ### Build and run

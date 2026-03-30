@@ -149,3 +149,6 @@ blog/stack.yaml.lock
 checks.json
 
 stack.yaml.lock
+docs/_site/
+drafts/
+build/
