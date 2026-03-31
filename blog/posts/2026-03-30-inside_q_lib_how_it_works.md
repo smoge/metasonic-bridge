@@ -978,6 +978,39 @@ outgrow.
 
 ---
 
+## References
+
+### Documentation & Source
+
+- [Q DSP Library — GitHub Repository](https://github.com/cycfi/q)
+- [Q DSP Library Documentation (v1.5-dev)](https://cycfi.github.io/q/q/v1.5-dev/index.html)
+- [Q DSP Library Documentation (v1.0 beta)](https://cycfi.github.io/q/q/v1.0_beta/index.html)
+- [QPlug — Audio Plugin Framework (AU/VST3)](https://cycfi.github.io/qplug/)
+- [Elements — C++ GUI Library](https://github.com/cycfi/elements)
+
+### Articles by Joel de Guzman (Cycfi Research)
+
+- ["My Sonic Quest: Adventures in DSP"](https://www.cycfi.com/2023/05/my-sonic-quest-adventures-in-dsp/) (May 2023) — Origin and design philosophy of the Q library.
+- ["Q Audio DSP Library"](https://www.cycfi.com/2019/02/q-audio-dsp-library/) (February 2019) — Initial v0.9 beta announcement.
+- ["Q Onwards to 1.0"](https://www.cycfi.com/2020/05/q-onwards-to-1-0/) (May 2020) — Synth examples, documentation progress, and design notes.
+- ["Q Audio DSP Library 1.0 Beta"](https://www.cycfi.com/2023/06/q-audio-dsp-library-1-0-beta/) (June 2023) — 1.0 beta release and documentation approach.
+
+### Pitch Detection Series (Cycfi Research)
+
+- ["Fast and Efficient Pitch Detection: Bitstream Autocorrelation"](https://www.cycfi.com/2018/03/fast-and-efficient-pitch-detection-bitstream-autocorrelation/) (March 2018)
+- ["Fast and Efficient Pitch Detection: Bliss!"](https://www.cycfi.com/2018/04/fast-and-efficient-pitch-detection-bliss/) (April 2018)
+- ["Fast and Efficient Pitch Detection: Revisited"](https://www.cycfi.com/2020/07/fast-and-efficient-pitch-detection-revisited/) (July 2020)
+- ["Fast and Efficient Pitch Detection: Power of Two"](https://www.cycfi.com/2021/02/fast-and-efficient-pitch-detection-power-of-two/) (February 2021)
+- ["Pitch Perfect: Enhanced Pitch Detection Techniques (Part 1)"](https://www.cycfi.com/2024/09/pitch-perfect-enhanced-pitch-detection-techniques-part-1/) (September 2024) — The new Hz pitch detection system replacing BACF.
+
+### Community
+
+- [Cycfi Research Discord](https://github.com/cycfi/q) (invite link in the GitHub README)
+- [Joel de Guzman on X/Twitter (@djowel)](https://x.com/djowel)
+- [Cycfi Research — DSP Category](https://www.cycfi.com/category/electronics/dsp/)
+
+---
+
 *MetaSonic is a Haskell-to-C++20 compiler pipeline for real-time audio
  synthesis. The Q DSP Library documentation is at
  [cycfi.github.io/q](https://cycfi.github.io/q/q/v1.5-dev/index.html). Follow
