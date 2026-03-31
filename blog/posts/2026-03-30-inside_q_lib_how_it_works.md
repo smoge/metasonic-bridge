@@ -346,10 +346,11 @@ available and how each category works.
 
 ### Biquad Filters
 
-The Robert Bristow-Johnson biquad family: `lowpass`, `highpass`, `bandpass_csg`
-(constant skirt gain), `bandpass_cpg` (constant peak gain), `allpass`, `notch`,
-`peaking`, `lowshelf`, `highshelf`. Each is constructed with a frequency (or
-frequency and Q/gain) and a sample rate:
+The [Robert Bristow-Johnson biquad](https://webaudio.github.io/Audio-EQ-Cookbook/Audio-EQ-Cookbook.txt):
+family `lowpass`, `highpass`, `bandpass_csg` (constant skirt gain), `bandpass_cpg`
+(constant peak gain), `allpass`, `notch`, `peaking`, `lowshelf`, `highshelf`.
+Each is constructed with a frequency (or frequency and Q/gain) and a sample
+rate:
 
 ```cpp
 q::lowpass  lp{1_kHz, 44100};
@@ -983,8 +984,6 @@ outgrow.
 ### Documentation & Source
 
 - [Q DSP Library — GitHub Repository](https://github.com/cycfi/q)
-- [Q DSP Library Documentation (v1.5-dev)](https://cycfi.github.io/q/q/v1.5-dev/index.html)
-- [QPlug — Audio Plugin Framework (AU/VST3)](https://cycfi.github.io/qplug/)
 
 ### Articles by Joel de Guzman (Cycfi Research)
 
@@ -1003,9 +1002,7 @@ outgrow.
 
 ### Community
 
-- [Cycfi Research Discord](https://github.com/cycfi/q) (invite link in the GitHub README)
-- [Cycfi Research — DSP Category](https://www.cycfi.com/category/electronics/dsp/)
-
+- [Cycfi Research Discord](https://github.com/cycfi/q) 
 ---
 
 *MetaSonic is a Haskell-to-C++20 compiler pipeline for real-time audio
