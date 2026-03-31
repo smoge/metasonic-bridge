@@ -984,9 +984,7 @@ outgrow.
 
 - [Q DSP Library — GitHub Repository](https://github.com/cycfi/q)
 - [Q DSP Library Documentation (v1.5-dev)](https://cycfi.github.io/q/q/v1.5-dev/index.html)
-- [Q DSP Library Documentation (v1.0 beta)](https://cycfi.github.io/q/q/v1.0_beta/index.html)
 - [QPlug — Audio Plugin Framework (AU/VST3)](https://cycfi.github.io/qplug/)
-- [Elements — C++ GUI Library](https://github.com/cycfi/elements)
 
 ### Articles by Joel de Guzman (Cycfi Research)
 
@@ -1006,7 +1004,6 @@ outgrow.
 ### Community
 
 - [Cycfi Research Discord](https://github.com/cycfi/q) (invite link in the GitHub README)
-- [Joel de Guzman on X/Twitter (@djowel)](https://x.com/djowel)
 - [Cycfi Research — DSP Category](https://www.cycfi.com/category/electronics/dsp/)
 
 ---
