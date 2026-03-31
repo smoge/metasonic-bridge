@@ -232,7 +232,7 @@ struct square_synth {
 This oscillator doesn't own its phase. It receives `phase` and `phase_dt` (the
 phase increment per sample, which encodes the frequency) as arguments. Phase
 accumulation is managed externally by a `phase_iterator`. The oscillator itself
-is `const`-callable and, in principle, can be evaluated at compile time.
+is `const`-callable and can be _evaluated at compile time_.
 
 This decomposition matters. In SuperCollider, `SinOsc` carries its own phase
 state internally — there's no way to separate "the function that maps phase to
