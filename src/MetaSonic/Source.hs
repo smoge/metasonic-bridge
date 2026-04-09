@@ -313,9 +313,15 @@ sinOsc freq phase =
   insertNode "sinOsc" (SinOsc (Param freq) (Param phase))
 
 -- | Create an output node that writes a signal to a bus.
-out :: Int -> NodeID -> SynthM NodeID
-out bus src =
-  insertNode "out" (Out bus (Audio src (PortIndex 0)))
+-- out :: Int -> NodeID -> SynthM NodeID
+-- out bus src =
+--   insertNode "out" (Out bus (Audio src (PortIndex 0)))
+
+out :: Int -> NodeID -> SynthM ()
+out bus src = do
+  _ <- insertNode "out" (Out bus (Audio src (PortIndex 0)))
+  pure ()
+
 
 -- | Create a gain node: multiply an input signal by a
 -- scalar amount. Stateless, sample-rate, and the simplest

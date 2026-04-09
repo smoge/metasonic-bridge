@@ -14,8 +14,6 @@ import           MetaSonic.Compile
 import           MetaSonic.FFI
 import           MetaSonic.IR
 import           MetaSonic.Source
-import           MetaSonic.Types
-
 
 simpleGraph :: SynthGraph
 simpleGraph = runSynth $ do
@@ -37,7 +35,6 @@ fanOutGraph = runSynth $ do
   out 1 g2
 
 
-
 demoMaxFrames :: Int
 demoMaxFrames = 256
 
@@ -47,18 +44,15 @@ demoOutputChannels = 2
 audioReadyTimeoutMs :: Int
 audioReadyTimeoutMs = 1000
 
-
--- | Run the full compilation pipeline on a graph and print
--- each stage's output.
 runPipeline :: String -> SynthGraph -> IO ()
 runPipeline label graph = do
-  putStrLn $ "\n══════════════════════════════════════"
-  putStrLn $ "  " ++ label
+  putStrLn "\n══════════════════════════════════════"
+  putStrLn $ "  " <> label
   putStrLn   "══════════════════════════════════════"
 
   --  Lower to IR.
   case lowerGraph graph of
-    Left err -> putStrLn $ "  Lowering error: " ++ err
+    Left err -> putStrLn $ "  Lowering error: " <> err
     Right ir -> do
       ir' <- evaluate (force ir)
       putStrLn "\n  IR nodes (execution order):"
@@ -72,13 +66,13 @@ runPipeline label graph = do
       -- Dense compilation.
       -- See Note [Dense lowering].
       case compileRuntimeGraph ir' of
-        Left err -> putStrLn $ "  Compilation error: " ++ err
+        Left err -> putStrLn $ "  Compilation error: " <> err
         Right rg -> do
           rg' <- evaluate (force rg)
           putStrLn "\n  Runtime nodes (dense):"
           mapM_ printRTNode (rgNodes rg')
 
-          -- C++ realtime execution.
+          -- C<> realtime execution.
           -- See Note [FFI boundary design] in MetaSonic.FFI.
           withRTGraph (length (rgNodes rg')) demoMaxFrames $ \rt -> do
             loadRuntimeGraph rt rg'
@@ -86,7 +80,7 @@ runPipeline label graph = do
             startRC <- startAudio rt demoOutputChannels (-1)
             if startRC /= 0
               then
-                putStrLn $ "  Audio start failed with status " ++ show startRC
+                putStrLn $ "  Audio start failed with status " <> show startRC
               else
                 flip finally (stopAudio rt) $ do
                   ready <- waitAudioStarted rt audioReadyTimeoutMs
@@ -98,30 +92,30 @@ runPipeline label graph = do
                     else
                       putStrLn $
                         "  Audio stream opened, but the callback did not report "
-                        ++ "ready within " ++ show audioReadyTimeoutMs ++ " ms."
+                        <> "ready within " <> show audioReadyTimeoutMs <> " ms."
 
   putStrLn ""
 
 
 printIRNode :: NodeIR -> IO ()
 printIRNode n =
-  putStrLn $ "    " ++ show (irNodeID n)
-          ++ " : " ++ show (irKind n)
-          ++ " @ " ++ show (irRate n)
-          ++ "  effects=" ++ show (irEffects n)
+  putStrLn $ "    " <> show (irNodeID n)
+          <> " : " <> show (irKind n)
+          <> " @ " <> show (irRate n)
+          <> "  effects=" <> show (irEffects n)
 
 printRegion :: Region -> IO ()
 printRegion r =
-  putStrLn $ "    " ++ show (regID r)
-          ++ " [" ++ show (regRate r) ++ "]"
-          ++ "  nodes=" ++ show (regNodes r)
-          ++ "  deps=" ++ show (regDeps r)
+  putStrLn $ "    " <> show (regID r)
+          <> " [" <> show (regRate r) <> "]"
+          <> "  nodes=" <> show (regNodes r)
+          <> "  deps=" <> show (regDeps r)
 
 printRTNode :: RuntimeNode -> IO ()
 printRTNode n =
-  putStrLn $ "    " ++ show (rnIndex n)
-          ++ " ← " ++ show (rnOriginalID n)
-          ++ " : " ++ show (rnKind n)
+  putStrLn $ "    " <> show (rnIndex n)
+          <> " ← " <> show (rnOriginalID n)
+          <> " : " <> show (rnKind n)
 
 main :: IO ()
 main = do
