@@ -4,27 +4,6 @@
 {-# LANGUAGE DerivingStrategies         #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
--- |
--- Module      : Main
--- Description : Demonstration of the MetaSonic compilation pipeline
---               and realtime audio output
---
--- Exercises the full pipeline from source graph construction
--- through lowering, region formation, dense compilation, and
--- finally q_io / PortAudio realtime playback from the C++
--- runtime.
---
--- Earlier versions of this demo ended by calling
--- @c_rt_graph_process@ a few times and printing block output.
--- That was useful for smoke testing, but it was not an audio
--- backend. The runtime now owns a realtime engine, so the demo
--- should actually play the compiled graph.
---
--- See Note [Example graphs] for what the three test cases
--- are designed to exercise.
---
--- See Note [Pipeline reading order] in MetaSonic.Types for
--- the recommended reading sequence across the library.
 
 module Main where
 
