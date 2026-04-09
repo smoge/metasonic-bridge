@@ -141,50 +141,88 @@ Each UGen constructor defines a DSP primitive. The
 constructor's fields are Connections, not raw values — every
 input is uniformly either a constant or a dependency.
 
-The current set is minimal:
+The current set is still small for simplicity, but it now distinguishes between
+two different routing roles that were previously blurred together:
 
-  SinOsc  — sine oscillator (stateful: phase accumulator)
-  Out     — output bus writer (stateless passthrough)
-  Gain    — multiply by scalar (stateless)
+  SinOsc  — oscillator, a signal source
+  Gain    — stateless signal transform
+  BusOut  — write a signal to an intermediate shared bus
+  BusIn   — read a signal from an intermediate shared bus
+  Out     — write a signal to a final hardware output channel
 
-Adding a new UGen constructor requires changes across both
-languages. See Note [Adding a new node kind] in
-MetaSonic.Types for the complete checklist.
+This distinction matters architecturally.
 
-Future extensions include:
+BusOut and BusIn model internal routing between subgraphs or synth regions. They
+are not final output. Their semantics are tied to shared resources, ordering
+constraints, and planned effect-aware scheduling.
 
-  - Filters (BiquadFilter — stateful, constrains fusion)
-  - Envelopes (EnvGen — block-rate, forces rate boundaries)
-  - Delay lines (Delay — stateful, introduces recursion)
-  - Bus input (In — carries BusRead effect)
+Out, by contrast, is reserved for final hardware-facing output. It is the
+terminal step, a side-effect-only "sink".
 
-Each addition makes the compilation pipeline richer: filters
-test state-aware region formation, envelopes test multi-rate
-compilation, delay lines test recursive semantics, and bus
-I/O tests effect-aware dependency analysis.
+That separation keeps the source language aligned with the intended runtime.
+
+It also prepares the compiler for future effect analysis:
+
+  BusOut bus  — will carry BusWrite bus
+  BusIn bus   — will carry BusRead bus
+  Out chan    — remains a terminal hardware-output node
+
+Adding a new UGen constructor still requires coordinated
+changes across the Haskell and C++ sides.
 -}
 
--- | A unit generator specification. Each constructor carries
--- its connections as positional fields.
+-- | A unit generator specification.
 --
--- See Note [UGen extensibility].
+-- 'UGen' is the source-level vocabulary of primitive graph
+-- nodes. Each constructor describes one DSP or routing
+-- operation before lowering to IR and dense runtime form.
+--
+-- At this level, the graph is still expressed as primitive
+-- nodes and explicit connections. This makes 'UGen' a unit-
+-- node DAG representation in the current prototype.
+--
+-- Later compilation passes may group several source nodes into
+-- regions or fused kernels, so the final runtime unit need not
+-- correspond one-to-one with a single 'UGen'. Even so, 'UGen'
+-- remains the basic source-level notion of a primitive node in
+-- the graph. At least in the currect vocabulaty.
+--
+-- Routing is intentionally split into two layers:
+--
+--   * 'BusOut' and 'BusIn' are for intermediate shared-bus
+--     communication between subgraphs or synth regions.
+--
+--   * 'Out' is reserved for final output.
+--
+-- This avoids overloading one constructor with two different
+-- meanings and keeps the source DSL closer to the runtime model.
 data UGen
-  = SinOsc !Connection !Connection
+  = Out !Int !Connection
+    -- ^ Final hardware output: output channel, input signal.
+    --
+    -- Writes a signal to a hardware-facing output channel.
+    -- This is a terminal routing node, conceptually distinct
+    -- from shared-bus communication.
+  | BusOut !Int !Connection
+    -- ^ Shared-bus write: bus index, input signal.
+    --
+    -- Writes a signal to an intermediate bus that may be read
+    -- later by other subgraphs or synth regions.
+    --
+    -- This is a shared-resource operation and will eventually
+    -- carry a 'BusWrite' effect.
+  | BusIn !Int
+    -- ^ Shared-bus read: bus index.
+    --
+    -- Reads a signal from an intermediate shared bus and
+    -- reintroduces it into the graph as a source node.
+  | SinOsc !Connection !Connection
     -- ^ Sine oscillator: frequency, initial phase.
-    -- Sample-rate, stateful (phase accumulator persists
-    -- across blocks).
-  | Out !Int !Connection
-    -- ^ Output node: bus index, input signal.
-    -- Sample-rate, currently a stateless passthrough.
-    -- Will carry a BusWrite effect when buses become real
-    -- shared resources.
-    -- See Note [Resource effects] in MetaSonic.Types.
   | Gain !Connection !Connection
     -- ^ Multiply: input signal, gain amount.
-    -- Sample-rate, stateless. The simplest fusable node.
-    -- See Note [Region formation] in MetaSonic.Compile.
   deriving stock    (Eq, Show, Generic)
   deriving anyclass (NFData)
+
 
 -- | A node in the source graph: a named UGen at a
 -- particular symbolic identity.
