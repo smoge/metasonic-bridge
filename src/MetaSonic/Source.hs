@@ -351,35 +351,70 @@ sinOsc :: Float -> Float -> SynthM NodeID
 sinOsc freq phase =
   insertNode "sinOsc" (SinOsc (Param freq) (Param phase))
 
--- | Create an output node that writes a signal to a bus.
--- out :: Int -> NodeID -> SynthM NodeID
--- out bus src =
---   insertNode "out" (Out bus (Audio src (PortIndex 0)))
+-- | Create a hardware output node.
 --
--- Note: out creates a sink node, so it is terminal by design:
+-- Writes a signal to a final output channel intended for the
+-- audio device. The @Int@ argument sets the output channel
+--
+-- This is a terminal node.
 out :: Int -> NodeID -> SynthM ()
-out bus src =
-  void $ insertNode "out" (Out bus (Audio src (PortIndex 0)))
+out channel src =
+  void $ insertNode "out" (Out channel (Audio src (PortIndex 0)))
 
--- | Create a gain node: multiply an input signal by a
--- scalar amount. Stateless, sample-rate, and the simplest
--- candidate for fusion.
+
+-- | Write a signal to a shared intermediate bus.
 --
--- See Note [Region formation] in MetaSonic.Compile.
+-- The @Int@ argument selects the bus index. The signal written
+-- here may be read later by other subgraphs or synth fragments
+-- using 'busIn'.
+--
+-- Unlike 'out', this does not target the hardware device. It is
+-- part of the internal routing system and will carry
+-- a 'BusWrite' effect.
+--
+-- This is a terminal node: it introduces a side effect
+-- (writing to a bus) but doesn't produce a downstream signal.
+busOut :: Int -> NodeID -> SynthM ()
+busOut bus src =
+  void $ insertNode "busOut" (BusOut bus (Audio src (PortIndex 0)))
+
+
+-- | Read a signal from a shared intermediate bus.
+--
+-- The @Int@ argument selects the bus index. The returned
+-- 'NodeID' can be used as a signal source for further
+-- processing
+--
+-- This is the dual of 'busOut'. It introduces a signal into
+-- the graph without requiring an explicit structural edge,
+-- and will carry a 'BusRead' effect.
+busIn :: Int -> SynthM NodeID
+busIn bus = insertNode "busIn" (BusIn bus)
+
+
 gain :: NodeID -> Float -> SynthM NodeID
 gain src amount =
   insertNode "gain" (Gain (Audio src (PortIndex 0)) (Param amount))
 
--- | Extract all 'NodeID' dependencies from a 'UGen'.
--- Only 'Audio' connections contribute; 'Param' values are
--- dependency-free.
+-- | Extract explicit structural 'NodeID' dependencies from
+-- a 'UGen'.
 --
--- See Note [Structural vs implicit dependencies].
+-- Only 'Audio' connections contribute dependencies. 'Param'
+-- values are dependency-free.
+--
+-- Note that 'BusIn' introduces no explicit structural edge at
+-- this level: it reads from a shared bus rather than from the
+-- output port of another node. Any ordering constraints induced
+-- by bus communication must therefore be recovered later from
+-- _effect annotations_ rather than from the structural graph
+-- alone.
 dependencies :: UGen -> [NodeID]
 dependencies = \case
-  SinOsc a b -> deps [a, b]
-  Out _ a    -> deps [a]
-  Gain a b   -> deps [a, b]
+  Out _ a     -> deps [a]
+  BusOut _ a  -> deps [a]
+  BusIn _     -> []
+  SinOsc a b  -> deps [a, b]
+  Gain a b    -> deps [a, b]
   where
     deps = foldr step []
     step (Audio nid _) acc = nid : acc
