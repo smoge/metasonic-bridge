@@ -8,6 +8,23 @@
 -- Module      : Main
 -- Description : Demonstration of the MetaSonic compilation pipeline
 --               and realtime audio output
+--
+-- Exercises the full pipeline from source graph construction
+-- through lowering, region formation, dense compilation, and
+-- finally q_io / PortAudio realtime playback from the C++
+-- runtime.
+--
+-- Earlier versions of this demo ended by calling
+-- @c_rt_graph_process@ a few times and printing block output.
+-- That was useful for smoke testing, but it was not an audio
+-- backend. The runtime now owns a realtime engine, so the demo
+-- should actually play the compiled graph.
+--
+-- See Note [Example graphs] for what the three test cases
+-- are designed to exercise.
+--
+-- See Note [Pipeline reading order] in MetaSonic.Types for
+-- the recommended reading sequence across the library.
 
 module Main where
 
@@ -20,21 +37,18 @@ import           MetaSonic.IR
 import           MetaSonic.Source
 import           MetaSonic.Types
 
--- | Minimal graph: one oscillator writing to output bus 0.
+
 simpleGraph :: SynthGraph
 simpleGraph = runSynth $ do
   osc <- sinOsc 440.0 0.0
   out 0 osc
 
--- | Linear chain: oscillator → gain → output.
 chainGraph :: SynthGraph
 chainGraph = runSynth $ do
   osc <- sinOsc 440.0 0.0
   g   <- gain osc 0.5
   out 0 g
 
--- | Fan-out: one oscillator feeds two independent gain
--- nodes, writing to a separate output bus.
 fanOutGraph :: SynthGraph
 fanOutGraph = runSynth $ do
   osc <- sinOsc 440.0 0.0
@@ -42,8 +56,8 @@ fanOutGraph = runSynth $ do
   g2  <- gain osc 0.7
   out 0 g1
   out 1 g2
-ass 0 to startAudio instead.
--}
+
+
 
 demoMaxFrames :: Int
 demoMaxFrames = 256
@@ -54,6 +68,7 @@ demoOutputChannels = 2
 audioReadyTimeoutMs :: Int
 audioReadyTimeoutMs = 1000
 
+
 -- | Run the full compilation pipeline on a graph and print
 -- each stage's output.
 runPipeline :: String -> SynthGraph -> IO ()
@@ -62,8 +77,7 @@ runPipeline label graph = do
   putStrLn $ "  " ++ label
   putStrLn   "══════════════════════════════════════"
 
-  -- Stage 1: Lower to IR.
-  -- See Note [Lowering as compilation] in MetaSonic.IR.
+  --  Lower to IR.
   case lowerGraph graph of
     Left err -> putStrLn $ "  Lowering error: " ++ err
     Right ir -> do
@@ -71,14 +85,13 @@ runPipeline label graph = do
       putStrLn "\n  IR nodes (execution order):"
       mapM_ printIRNode (giNodes ir')
 
-      -- Stage 2: Region formation.
-      -- See Note [Region formation] in MetaSonic.Compile.
+      -- Region formation.
       let !regionGraph = formRegions (giNodes ir')
       putStrLn "\n  Regions:"
       mapM_ printRegion (rgRegions regionGraph)
 
-      -- Stage 3: Dense compilation.
-      -- See Note [Dense lowering] in MetaSonic.Compile.
+      -- Dense compilation.
+      -- See Note [Dense lowering].
       case compileRuntimeGraph ir' of
         Left err -> putStrLn $ "  Compilation error: " ++ err
         Right rg -> do
@@ -86,7 +99,7 @@ runPipeline label graph = do
           putStrLn "\n  Runtime nodes (dense):"
           mapM_ printRTNode (rgNodes rg')
 
-          -- Stage 4: C++ realtime execution.
+          -- C++ realtime execution.
           -- See Note [FFI boundary design] in MetaSonic.FFI.
           withRTGraph (length (rgNodes rg')) demoMaxFrames $ \rt -> do
             loadRuntimeGraph rt rg'
@@ -110,9 +123,7 @@ runPipeline label graph = do
 
   putStrLn ""
 
--- These are not part of the compilation pipeline; 
--- they exist only to make the intermediate
--- representations visible
+
 printIRNode :: NodeIR -> IO ()
 printIRNode n =
   putStrLn $ "    " ++ show (irNodeID n)
@@ -135,7 +146,7 @@ printRTNode n =
 
 main :: IO ()
 main = do
-  putStrLn "Each example will compile, and wait for Enter."
+  putStrLn "Each graph will compile, play audio, and wait for Enter."
   runPipeline "Simple (SinOsc → Out)"              simpleGraph
   runPipeline "Chain (SinOsc → Gain → Out)"        chainGraph
   runPipeline "Fan-out (SinOsc → 2×Gain → 2×Out)" fanOutGraph
