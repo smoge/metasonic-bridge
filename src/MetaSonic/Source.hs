@@ -37,6 +37,7 @@ module MetaSonic.Source
   ) where
 
 import           Control.DeepSeq            (NFData)
+import           Control.Monad              (void)
 import           Control.Monad.State.Strict
 import qualified Data.Map.Strict            as M
 import           GHC.Generics               (Generic)
@@ -316,12 +317,11 @@ sinOsc freq phase =
 -- out :: Int -> NodeID -> SynthM NodeID
 -- out bus src =
 --   insertNode "out" (Out bus (Audio src (PortIndex 0)))
-
+--
+-- Note: out creates a sink node, so it is terminal by design:
 out :: Int -> NodeID -> SynthM ()
-out bus src = do
-  _ <- insertNode "out" (Out bus (Audio src (PortIndex 0)))
-  pure ()
-
+out bus src =
+  void $ insertNode "out" (Out bus (Audio src (PortIndex 0)))
 
 -- | Create a gain node: multiply an input signal by a
 -- scalar amount. Stateless, sample-rate, and the simplest
