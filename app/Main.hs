@@ -7,13 +7,15 @@
 
 module Main where
 
-import           Control.DeepSeq   (force)
-import           Control.Exception (evaluate, finally)
+import           Control.DeepSeq         (force)
+import           Control.Exception       (evaluate, finally)
 
 import           MetaSonic.Compile
 import           MetaSonic.FFI
 import           MetaSonic.IR
 import           MetaSonic.Source
+import           MetaSonic.Visualize.TUI (inspectGraph, launchInspector)
+
 
 simpleGraph :: SynthGraph
 simpleGraph = runSynth $ do
@@ -119,6 +121,9 @@ printRTNode n =
 
 main :: IO ()
 main = do
+  inspectGraph simpleGraph
+  inspectGraph chainGraph
+  inspectGraph fanOutGraph
   putStrLn "Each graph will compile, play audio, and wait for Enter."
   runPipeline "Simple (SinOsc → Out)"              simpleGraph
   runPipeline "Chain (SinOsc → Gain → Out)"        chainGraph

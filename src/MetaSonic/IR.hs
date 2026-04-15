@@ -8,15 +8,14 @@
 -- Module      : MetaSonic.IR
 -- Description : Annotated intermediate representation
 --
--- The first real compilation pass: lower source graphs into
--- an annotated IR carrying rate and effect metadata.
+-- The first compilation pass: lower source graphs into an annotated IR carrying
+-- rate and effect metadata.
 --
--- See Note [Lowering as compilation] for how lowerGraph ties
--- together validation, sorting, annotation, and rate checking.
+-- See Note [Lowering as compilation] for how lowerGraph ties together
+-- validation, sorting, annotation, and rate checking.
 --
--- See Note [Surface syntax vs semantic syntax] in
--- MetaSonic.Source for how this module relates to the source
--- DSL.
+-- See Note [Surface syntax vs semantic syntax] in MetaSonic.Source for how this
+-- module relates to the source DSL.
 
 module MetaSonic.IR
   ( -- * Symbolic IR types
@@ -42,8 +41,9 @@ import           MetaSonic.Validate
 
 {- Note [IR vocabulary stripping]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The IR is the compiler's internal representation, stripped of
-the DSL vocabulary from MetaSonic.Source:
+
+The IR is the compiler's internal representation, stripped of the DSL vocabulary
+(MetaSonic.Source) and supplemented with semantic annotations (MetaSonic.Types).
 
   Source type        IR type         Change
   ──────────────     ──────────     ──────────────────────
@@ -54,19 +54,16 @@ the DSL vocabulary from MetaSonic.Source:
   Connection         InputConn       uniform dependency/constant
   SynthGraph         GraphIR         nodes in execution order
 
-The key difference: in the source graph, the fact that a
-connection is "audio-rate" is encoded in the Connection
-constructor (Audio vs Param). In the IR, rate information
-lives on the node itself (irRate), not on the connection.
-This separation allows rate inference to be a node-level
-operation independent of wiring, and allows future rate
-propagation to change a node's rate without altering its
-input structure.
+The key difference: in the source graph, the fact that a connection is
+"audio-rate" is encoded in the Connection constructor (Audio vs Param). In the
+IR, rate information lives on the node itself (irRate), not on the connection.
+This separation allows rate inference to be a node-level operation independent
+of wiring, and allows future rate propagation to change a node's rate without
+altering its input structure.
 
-References are still symbolic (NodeID, not NodeIndex). The
-decisive transformation to dense indices happens in
-MetaSonic.Compile. See Note [Dense lowering] in
-MetaSonic.Compile.
+References are still symbolic (NodeID, not NodeIndex). The decisive
+transformation to dense indices happens in MetaSonic.Compile. See Note [Dense
+lowering] in MetaSonic.Compile.
 -}
 
 -- | An input connection in the IR: a symbolic reference to
