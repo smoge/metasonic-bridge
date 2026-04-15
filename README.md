@@ -13,11 +13,7 @@ cover significantly more detail than this file. For a conceptual picture of the
 system, read the code in pipeline order starting from
 [`src/MetaSonic/Types.hs`](./src/MetaSonic/Types.hs).
 
-See [ROADMAP.md](./ROADMAP.md) for current progress and next planned steps.
-For deeper design discussion and reasoning, see the
-[blog](https://smoge.github.io/metasonic-bridge).
-
-> *Don't run the graph. Compile it.*
+For deeper design discussion and reasoning, see the [blog](https://smoge.github.io/metasonic-bridge).
 
 ```
 Haskell DSL → SynthGraph → GraphIR → RuntimeGraph → DSP Engine
@@ -30,23 +26,18 @@ Everything is resolved before the C++ layer sees it.
 
 ## Motivation
 
-Most audio environments combine graph composition, scheduling, signal
-processing, and state management into a single layer. Convenient at first — but
-complexity grows, and reasoning becomes difficult.
-
-MetaSonic draws a line:
-
-```
-graph construction ≠ signal execution
-```
-
-Graph building is a compiler problem. DSP is a runtime problem. Two worlds:
+At this development stage, graph building is a compiler problem. DSP is a
+runtime problem. Two worlds:
 
 - **Haskell** — builds, analyzes, compiles
 - **C++20** — executes DSP, deterministic and strict
 
 You don't evaluate structure at runtime. You build, validate, order, compile —
 then execute. When audio starts, decisions are already made.
+
+Note: planned changes include adding and modifying graphs without interrupting
+audio. For that, NodeID will survive the FFI boundary, but will not touch the
+audio thread.
 
 ---
 
@@ -82,7 +73,7 @@ particularly when new tinysynth plugins are introduced — though there are plan
 to derive more of this synchronization from plugin metadata.
 
 As the system stabilizes, all layers will live in a single monorepo while
-keeping their architectural modularity.
+keeping their architectural modularity. This repo layout is temporary.
 
 ---
 
@@ -108,7 +99,89 @@ stack exec metasonic-bridge
 
 ---
 
-## SynthGraph syntax 
+## Usage
+
+The executable supports three run modes and an optional set of demo targets.
+
+```
+stack exec -- metasonic-bridge [MODE] [DEMO ...]
+```
+
+### Run modes
+
+| Flag               | Behavior                                               |
+|--------------------|--------------------------------------------------------|
+| *(default)*        | Compile and play audio directly                        |
+| `--inspect`        | Open the TUI pipeline inspector, then play audio       |
+| `--inspect-only`   | Open the TUI pipeline inspector, skip audio            |
+
+### Demo targets
+
+If no demo names are given, all available demos run in sequence.
+
+To list the available `SynthGraph`s, run:
+
+```sh
+stack exec -- metasonic-bridge --help
+```
+
+### Examples
+
+```sh
+# Play all (audio only)
+stack exec -- metasonic-bridge
+
+# Play a specific SynthGraph
+stack exec -- metasonic-bridge chain
+
+# Inspect a graph with TUI, then play audio
+stack exec -- metasonic-bridge --inspect chain
+
+# Inspect all graphs with no audio
+stack exec -- metasonic-bridge --inspect-only
+
+# Inspect a specific graph
+stack exec -- metasonic-bridge --inspect-only fanout
+```
+
+### Pipeline inspector (TUI)
+
+The `--inspect` and `--inspect-only` flags launch a terminal UI built with brick
+that lets you step through every stage of the compilation pipeline for each demo
+graph.
+
+**Navigation:**
+
+| Key       | Action                                |
+|-----------|---------------------------------------|
+| `←` / `→` | Switch pipeline stage                |
+| `1`–`5`   | Jump to stage directly               |
+| `↑` / `↓` | Select node within current stage     |
+| `Enter`   | Toggle detail view for selected node |
+| `q` / `Esc` | Exit inspector and continue        |
+
+**Pipeline stages displayed:**
+
+1. **Source** — the `SynthGraph` as constructed by the DSL: unordered node specs with symbolic `NodeID`s, no semantic annotations.
+2. **Toposort** — execution order produced by `validateAndSort`: referential integrity verified, acyclicity proven, dependency order fixed.
+3. **IR** — the annotated `GraphIR` after `lowerGraph`: each node carries `NodeKind`, `Rate`, and `[Eff]` metadata. Rate edge validation has passed.
+4. **Regions** — `RegionGraph` from `formRegions`: nodes grouped into execution regions by rate compatibility, with inter-region dependency edges.
+5. **Dense** — the `RuntimeGraph` from `compileRuntimeGraph`: symbolic `NodeID`s erased, replaced by contiguous `NodeIndex` values. This is what crosses the FFI boundary.
+
+When using `--inspect`, the inspector runs for each demo graph in sequence.
+After exiting the inspector (`q` or `Esc`), a compilation summary prints to
+stdout and audio begins. With `--inspect-only`, audio is skipped entirely.
+
+The left panel shows node data formatted for the selected stage. The right
+panel renders an ASCII graph with box-and-arrow topology. The selected node
+is highlighted in both panels and expands to show stage-specific detail.
+
+---
+
+## SynthGraph syntax
+
+The DSL for building graphs looks like this (these are some of the
+included demos, one can play audio and inspect each one via TUI):
 
 ```haskell
 simpleGraph :: SynthGraph
@@ -122,7 +195,7 @@ chainGraph = runSynth $ do
   g   <- gain osc 0.5
   out 0 g
 
-fanOutGraph :: SynthGraph 
+fanOutGraph :: SynthGraph
 fanOutGraph = runSynth $ do
   osc <- sinOsc 440.0 0.0
   g1  <- gain osc 0.3
@@ -147,11 +220,11 @@ down to the same bridge primitives.
 
 - Block-based DSP execution
 - Static, precompiled graphs
-- DSP layer grounded on q_lib 
+- DSP layer grounded on q_lib
 - Minimal node set (tinysynth includes q_lib "plugins" and will extend it)
+- Terminal pipeline inspector for stepping through compilation stages
 
 ---
 
->  *Before the sound breathes, the structure is decided.*
->  *Before the signal moves, the graph is already aligned.*
-
+> *Before the sound breathes, the structure is decided.*
+> *Before the signal moves, the graph is already aligned.*
