@@ -143,7 +143,7 @@ stack exec -- metasonic-bridge --inspect-only
 stack exec -- metasonic-bridge --inspect-only fanout
 ```
 
-### TUI inspector (TUI)
+### Compilation inspector (TUI)
 
 The `--inspect` and `--inspect-only` flags launch a terminal UI built with brick
 that lets you step through every stage of the compilation pipeline for each demo
