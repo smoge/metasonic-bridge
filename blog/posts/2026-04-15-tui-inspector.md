@@ -16,9 +16,9 @@ show up as something local:
 - a region split that feels suspicious
 - a dense input reference that no longer resembles the source graph that produced it 
 
-The earlier fallback was scattered `print` output. That works too, but it does
-not give me a stable way to move between stages while keeping one node in view
-across transformations. 
+The simpler fallback was scattered `print` output. That works, but it does not
+give me a stable way to move between stages — or to keep one node in view across
+transformations.
 
 A browser UI, perhaps with `threepenny-gui`, would have worked, but it felt like
 too much machinery for a tool whose data is mostly structural. Right now, a
@@ -43,12 +43,14 @@ summary and then starts audio. In `--inspect-only` mode, it stops after
 inspection. An explicit `--audio-only` flag is also accepted, though that is
 just the default behavior spelled out.
 
+![TUI Inspector](https://raw.githubusercontent.com/smoge/metasonic-bridge/refs/heads/main/img/tui%3Dinspector.png)
+
 The current interface is dead-simple: a stage-specific list on the left
 and a detail view for the selected item on the right. Navigation is
 keyboard-only. That is enough to make the compiler inspectable without turning
 the inspector into a separate subsystem.
 
-One design choice made sense early: the UI should not be the thing that runs
+One choice was clear from the start: the UI should not be the thing that runs
 compiler passes. The inspector is built around a precomputed trace of the
 pipeline. The compiler runs first; the UI renders the results afterward. That
 keeps the interface simple and makes failures easier to reason about, because
@@ -59,18 +61,16 @@ of spinning it out into a separate tool. That keeps the inspector, the demo
 graphs, and the compiler version-locked. When the pipeline changes, the
 inspection path changes with it. No separate binary to drift. 
 
-The downside: the executable now carries the terminal UI stack as part of the
-demo tool. Well, kind of. That could be avoided using compilation flags to
-include or remove the TUI parts from the App executable. For now, that trade-off
-is worth it. The whole point of the inspector is to stay close to the code that
-produces the data. If we want to split that later, the task is not exactly
-"rocket science".
+The downside is that the executable carries the terminal UI stack — though
+compilation flags could strip it out. For now, that trade-off is worth it. The
+whole point of the inspector is to stay close to the code that produces the
+data. If we want to split that later, the task is not exactly "rocket science".
 
-The current inspector is static and stage-oriented, which is useful already. The
-next steps I care about are more specific. 
+The current inspector is static and stage-oriented, which is useful already.
+There are a few things I want next.
 
 The first is diff-style presentation between stages. Seeing one stage is useful.
-Seeing exactly what changed between is better.
+Seeing exactly what changed between two stages would be better.
 
 The second is tighter feedback during development. Recompiling and reopening
 manually is fine, but a watch mode would turn the inspector from a debugging
@@ -83,11 +83,11 @@ ABI exposes create, clear, add, set, connect, &c.; `loadRuntimeGraph` begins
 with `rt_graph_clear`; and the runtime's clear operation stops active audio.
 
 A no-restart graph swap will require a new runtime/ABI handoff. I'm just going
-slow there since it touches the boudaries and will have more implications later.
+slow there since it touches the boundaries and will have more implications later.
 
 
 As far as UI is concerned, I still want a separate runtime-facing UI on the C++
-side. Dear Imgui is the tool I'm more confortable with on this side, and it has
+side. Dear Imgui is the tool I'm more comfortable with on this side, and it has
 very interesting features that will be useful there. The terminal inspector
 answers compiler questions. A runtime tool should answer execution questions.
 Those are related, but they are not the same problem.
