@@ -46,13 +46,13 @@ audio. This will require some changes in the C ABI.
 and tested independently:
 
 ```
-metasonic-core       DSL — no C++ dependencies, implemented in pure Haskell
+metasonic-core       DSL — no C++ dependencies, pure Haskell
      ↓
-metasonic-bridge     graph compiler and FFI (+ TUI inspection of graph compilation stages)
+metasonic-bridge     graph compiler+FFI+TUI inspectior
      ↓
-tinysynth            real-time audio engine — pure C++20 + q_lib + portaudio
+tinysynth            real-time audio engine — pure C++20 + q_lib 
      ↓
-tinysynth-ui         Dear ImGui, runtime-facing  UI on the C++ side (unrelated to terminal inspector)
+tinysynth-ui         runtime-facing UI on the C++ side 
 ```
 
 - **metasonic-core** defines the user-facing DSL. No FFI involvement. Type
@@ -61,7 +61,7 @@ tinysynth-ui         Dear ImGui, runtime-facing  UI on the C++ side (unrelated t
   marshals across the FFI boundary.
 - **tinysynth** is the audio engine. Plugins are authored and tested entirely in
   C++ — no Haskell toolchain required.
-- **metasonic-ui** provides real-time parameter control and audio visualization
+- **tinysynth-ui** provides real-time parameter control and audio visualization
   through Dear ImGui. It links tinysynth directly for the hot path (knobs,
   meters, FFT display) and `dlopen`s the bridge shared library for structural
   operations (graph editing, recompilation).
@@ -143,7 +143,7 @@ stack exec -- metasonic-bridge --inspect-only
 stack exec -- metasonic-bridge --inspect-only fanout
 ```
 
-### Pipeline inspector (TUI)
+### TUI inspector (TUI)
 
 The `--inspect` and `--inspect-only` flags launch a terminal UI built with brick
 that lets you step through every stage of the compilation pipeline for each demo
@@ -151,6 +151,8 @@ graph. When using `--inspect`, the inspector runs for each demo graph in
 sequence. After exiting the inspector (`q` or `Esc`), a compilation summary
 prints to stdout and audio begins. With `--inspect-only`, audio is skipped
 entirely.
+
+![TUI Inspector](./img/tui=inspector.png)
 
 ---
 
