@@ -79,7 +79,7 @@ traceCompile sg =
       lookupSource :: NodeID -> NodeSpec
       lookupSource nid =
         fromMaybe
-          (error ("traceCompile: missing NodeSpec for " ++ show nid))
+          (error ("traceCompile: missing NodeSpec for " <> show nid))
           (M.lookup nid sourceMap)
 
   in

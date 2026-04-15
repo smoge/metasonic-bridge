@@ -96,13 +96,13 @@ safeIndex xs i
       []    -> Nothing
 
 showNodeID :: NodeID -> String
-showNodeID (NodeID x) = "NodeID " ++ show x
+showNodeID (NodeID x) = "NodeID " <> show x
 
 showNodeIndex :: NodeIndex -> String
 showNodeIndex (NodeIndex x) = show x
 
 showRegionID :: RegionID -> String
-showRegionID (RegionID x) = "R" ++ show x
+showRegionID (RegionID x) = "R" <> show x
 
 inspectGraph :: SynthGraph -> IO ()
 inspectGraph = launchInspector . traceCompile
@@ -161,19 +161,19 @@ drawTabs st =
       in
         withAttr attr' $
           padLeftRight 1 $
-            str (marker ++ " " ++ stageLabel s ++ " ")
+            str (marker <> " " <> stageLabel s <> " ")
 
 drawDesc :: AppState -> Widget Name
 drawDesc st =
   let stage = st ^. asStage
       ct    = st ^. asTrace
       extra = case traceStageError ct stage of
-        Just e  -> "  ✗ " ++ e
+        Just e  -> "  ✗ " <> e
         Nothing ->
           case ctFailedAt ct of
             Just failed
               | failed /= stage && not (traceReached ct stage) ->
-                  "  (blocked by failure at " ++ stageLabel failed ++ ")"
+                  "  (blocked by failure at " <> stageLabel failed <> ")"
             _ ->
               ""
   in
@@ -192,7 +192,7 @@ drawNodePanel st =
     stage  = st ^. asStage
     ct     = st ^. asTrace
     sel    = st ^. asSelected
-    title' = " " ++ stageLabel stage ++ " "
+    title' = " " <> stageLabel stage <> " "
 
     rows = case stage of
       TraceSource  ->
@@ -218,7 +218,7 @@ drawNodePanel st =
 
 fmtOrderRows :: [NodeID] -> [String]
 fmtOrderRows order =
-  [ show i ++ ". " ++ showNodeID nid
+  [ show i <> ". " <> showNodeID nid
   | (i, nid) <- zip [0 :: Int ..] order
   ]
 
@@ -226,7 +226,7 @@ nodeRow :: Int -> Int -> String -> Widget Name
 nodeRow sel i txt =
   let attr' = if i == sel then nodeSelAttr else nodeAttr
       mark  = if i == sel then "▶ " else "  "
-      base  = withAttr attr' $ padRight Max $ str (mark ++ txt)
+      base  = withAttr attr' $ padRight Max $ str (mark <> txt)
   in
     if i == sel then visible base else base
 
@@ -238,22 +238,22 @@ notReached =
 fmtSource :: NodeSpec -> String
 fmtSource spec =
   showNodeID (nsID spec)
-    ++ "  [" ++ nsName spec ++ "]  "
-    ++ show (nsUgen spec)
+    <> "  [" <> nsName spec <> "]  "
+    <> show (nsUgen spec)
 
 fmtIR :: NodeIR -> String
 fmtIR n =
   showNodeID (irNodeID n)
-    ++ " : " ++ show (irKind n)
-    ++ " @ " ++ show (irRate n)
-    ++ "  eff=" ++ fmtEffs (irEffects n)
+    <> " : " <> show (irKind n)
+    <> " @ " <> show (irRate n)
+    <> "  eff=" <> fmtEffs (irEffects n)
 
 fmtEffs :: [Eff] -> String
 fmtEffs [Pure] = "Pure"
 fmtEffs effs   = show effs
 
 fmtInputConn :: InputConn -> String
-fmtInputConn (FromNode nid (PortIndex p)) = showNodeID nid ++ ":" ++ show p
+fmtInputConn (FromNode nid (PortIndex p)) = showNodeID nid <> ":" <> show p
 fmtInputConn (Literal x)                  = show x
 
 fmtRegionRows :: Int -> RegionGraph -> [Widget Name]
@@ -264,32 +264,32 @@ fmtRegionRows sel rg = go 0 (rgRegions rg)
       let hdr =
             withAttr regionHdrAttr $
               str
-                ( "── " ++ showRegionID (regID r)
-               ++ " [" ++ show (regRate r) ++ "]"
-               ++ " deps=" ++ fmtRegionDeps (regDeps r)
+                ( "── " <> showRegionID (regID r)
+               <> " [" <> show (regRate r) <> "]"
+               <> " deps=" <> fmtRegionDeps (regDeps r)
                 )
 
           nodeRows =
-            [ nodeRow sel (idx + i) ("  " ++ showNodeID nid)
+            [ nodeRow sel (idx + i) ("  " <> showNodeID nid)
             | (i, nid) <- zip [0 :: Int ..] (regNodes r)
             ]
       in
-        hdr : nodeRows ++ go (idx + length (regNodes r)) rest
+        hdr : nodeRows <> go (idx + length (regNodes r)) rest
 
 fmtRegionDeps :: S.Set RegionID -> String
 fmtRegionDeps deps
   | S.null deps = "{}"
-  | otherwise   = "{" ++ unwords (map showRegionID (S.toList deps)) ++ "}"
+  | otherwise   = "{" <> unwords (map showRegionID (S.toList deps)) <> "}"
 
 fmtDense :: RuntimeNode -> String
 fmtDense n =
-  "[" ++ showNodeIndex (rnIndex n) ++ "] "
-    ++ show (rnKind n)
-    ++ "  ← "
-    ++ unwords (map fmtRtInput (rnInputs n))
+  "[" <> showNodeIndex (rnIndex n) <> "] "
+    <> show (rnKind n)
+    <> "  ← "
+    <> unwords (map fmtRtInput (rnInputs n))
 
 fmtRtInput :: RuntimeInput -> String
-fmtRtInput (RFrom ix (PortIndex p)) = "[" ++ showNodeIndex ix ++ "]:" ++ show p
+fmtRtInput (RFrom ix (PortIndex p)) = "[" <> showNodeIndex ix <> "]:" <> show p
 fmtRtInput (RConst x)               = show x
 
 drawDetailPanel :: AppState -> Widget Name
@@ -346,8 +346,8 @@ detailOrder ct sel nid =
       [ section "Execution position" (show sel)
       , section "NodeID" (showNodeID nid)
       ]
-      ++ sourceInfo
-      ++ [ str ""
+      <> sourceInfo
+      <> [ str ""
          , withAttr helpAttr $ str "This list order = validated topological order."
          , withAttr helpAttr $ str "Its zero-based position becomes dense NodeIndex later."
          ]
@@ -359,13 +359,13 @@ detailSource spec =
     , section "Name" (nsName spec)
     , str ""
     , withAttr titleAttr $ str "UGen"
-    , str ("  " ++ show (nsUgen spec))
+    , str ("  " <> show (nsUgen spec))
     , str ""
     , withAttr titleAttr $ str "Structural dependencies"
     , vBox $
         case dependencies (nsUgen spec) of
           [] -> [str "  (none)"]
-          ds -> [str ("  → " ++ showNodeID d) | d <- ds]
+          ds -> [str ("  → " <> showNodeID d) | d <- ds]
     ]
 
 detailIR :: GraphIR -> NodeIR -> Widget Name
@@ -383,19 +383,19 @@ detailIR ir n =
           case irInputs n of
             []   -> [str "  (none)"]
             inps ->
-              [ str ("  :" ++ show i ++ " ← " ++ fmtInputConn inp)
+              [ str ("  :" <> show i <> " ← " <> fmtInputConn inp)
               | (i, inp) <- zip [0 :: Int ..] inps
               ]
       , str ""
       , withAttr titleAttr $ str "Controls"
-      , str ("  " ++ show (irControls n))
+      , str ("  " <> show (irControls n))
       , str ""
       , withAttr titleAttr $ str "Feeds into"
       , vBox $
           case consumers of
             [] -> [str "  (terminal node)"]
             cs ->
-              [ str ("  → " ++ showNodeID cid ++ " :" ++ show port)
+              [ str ("  → " <> showNodeID cid <> " :" <> show port)
               | (cid, port) <- cs
               ]
       ]
@@ -425,17 +425,17 @@ detailRegion rg sel =
           , section "  ID" (showRegionID (regID region))
           , section "  Rate" (show (regRate region))
           , section "  Deps" (fmtRegionDeps (regDeps region))
-          , section "  Size" (show (length members) ++ " nodes")
-          , section "  Position" (show (posInRegion + 1) ++ " of " ++ show (length members))
+          , section "  Size" (show (length members) <> " nodes")
+          , section "  Position" (show (posInRegion + 1) <> " of " <> show (length members))
           , str ""
           , withAttr titleAttr $ str "Region members"
           , vBox
-              [ str ("  " ++ marker i ++ showNodeID m)
+              [ str ("  " <> marker i <> showNodeID m)
               | (i, m) <- zip [0 :: Int ..] members
               ]
           , str ""
           , withAttr titleAttr $ str "Effects (union)"
-          , str ("  " ++ fmtEffs (regEffects region))
+          , str ("  " <> fmtEffs (regEffects region))
           ]
 
 lookupRegionNode :: RegionGraph -> Int -> Maybe (Region, NodeID, Int)
@@ -463,9 +463,9 @@ detailDense ct rt n =
       , withAttr titleAttr $ str "The decisive mapping"
       , withAttr mapAttr $
           str
-            ( "  " ++ showNodeID (rnOriginalID n)
-           ++ "  ──▶  "
-           ++ showNodeIndex (rnIndex n)
+            ( "  " <> showNodeID (rnOriginalID n)
+           <> "  ──▶  "
+           <> showNodeIndex (rnIndex n)
             )
       , str ""
       , withAttr titleAttr $ str "Inputs (dense)"
@@ -473,19 +473,19 @@ detailDense ct rt n =
           case rnInputs n of
             []   -> [str "  (none)"]
             inps ->
-              [ str ("  :" ++ show i ++ " ← " ++ fmtRtInput inp)
+              [ str ("  :" <> show i <> " ← " <> fmtRtInput inp)
               | (i, inp) <- zip [0 :: Int ..] inps
               ]
       , str ""
       , withAttr titleAttr $ str "Controls"
-      , str ("  " ++ show (rnControls n))
+      , str ("  " <> show (rnControls n))
       , str ""
       , withAttr titleAttr $ str "Feeds into"
       , vBox $
           case consumers of
             [] -> [str "  (terminal node)"]
             cs ->
-              [ str ("  → [" ++ showNodeIndex cix ++ "] :" ++ show port)
+              [ str ("  → [" <> showNodeIndex cix <> "] :" <> show port)
               | (cix, port) <- cs
               ]
       , str ""
@@ -512,15 +512,15 @@ drawNodeHistory ir rg rn =
     withAttr helpAttr $
       vBox
         [ str "Compilation history:"
-        , str ("  Source:  " ++ showNodeID origID)
-        , str ("  IR:      " ++ maybe "?" (\n -> show (irKind n) ++ " @ " ++ show (irRate n)) irNode)
-        , str ("  Region:  " ++ maybe "?" showRegionID regionID)
-        , str ("  Dense:   " ++ showNodeIndex (rnIndex rn))
+        , str ("  Source:  " <> showNodeID origID)
+        , str ("  IR:      " <> maybe "?" (\n -> show (irKind n) <> " @ " <> show (irRate n)) irNode)
+        , str ("  Region:  " <> maybe "?" showRegionID regionID)
+        , str ("  Dense:   " <> showNodeIndex (rnIndex rn))
         ]
 
 section :: String -> String -> Widget Name
 section label val =
-  withAttr titleAttr (str (label ++ ": ")) <+> str val
+  withAttr titleAttr (str (label <> ": ")) <+> str val
 
 drawStatusBar :: AppState -> Widget Name
 drawStatusBar st =
@@ -529,17 +529,17 @@ drawStatusBar st =
       n     = nodeCount ct stage
       pos
         | n <= 0    = "—"
-        | otherwise = show (st ^. asSelected + 1) ++ "/" ++ show n
+        | otherwise = show (st ^. asSelected + 1) <> "/" <> show n
       pipelineBit =
         case ctFailedAt ct of
           Nothing -> "  ✓ all stages passed"
-          Just s  -> "  ✗ failed at " ++ stageLabel s
+          Just s  -> "  ✗ failed at " <> stageLabel s
   in
     withAttr statusAttr $
       hBox
         [ str " ←/→ stage  ↑/↓ node  PgUp/PgDn faster  Home/End ends  1-5 jump  q quit"
         , fill ' '
-        , str (pos ++ pipelineBit ++ " ")
+        , str (pos <> pipelineBit <> " ")
         ]
 
 moveSelectionBy :: Int -> EventM Name AppState ()
