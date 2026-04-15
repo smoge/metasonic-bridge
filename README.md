@@ -48,11 +48,11 @@ and tested independently:
 ```
 metasonic-core       DSL — no C++ dependencies, implemented in pure Haskell
      ↓
-metasonic-bridge     graph compiler + FFI — Haskell to C++20
+metasonic-bridge     graph compiler and FFI (+ TUI inspection of graph compilation stages)
      ↓
-tinysynth            real-time audio engine — pure C++20, depends on and extends q_lib
+tinysynth            real-time audio engine — pure C++20 + q_lib + portaudio
      ↓
-metasonic-ui         Dear ImGui interface — visualization + parameter control
+tinysynth-ui         Dear ImGui, runtime-facing  UI on the C++ side (unrelated to terminal inspector)
 ```
 
 - **metasonic-core** defines the user-facing DSL. No FFI involvement. Type
