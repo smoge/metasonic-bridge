@@ -145,14 +145,6 @@ stack exec -- metasonic-bridge --inspect-only fanout
 
 ### Pipeline inspector (TUI)
 
-The inspector currently has two panes: a stage-specific list on the left and a
-detail view for the selected item on the right. Use ←/→ or 1–5 to change stages,
-↑/↓ to move selection, PgUp/PgDn and Home/End for faster navigation, and q or
-Esc to exit.The inspector currently has two panes: a stage-specific list on the
-left and a detail view for the selected item on the right. Use ←/→ or 1–5 to
-change stages, ↑/↓ to move selection, PgUp/PgDn and Home/End for faster
-navigation, and q or Esc to exit.
-
 The `--inspect` and `--inspect-only` flags launch a terminal UI built with brick
 that lets you step through every stage of the compilation pipeline for each demo
 graph. When using `--inspect`, the inspector runs for each demo graph in
