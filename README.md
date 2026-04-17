@@ -81,7 +81,7 @@ keeping their architectural modularity. This repo layout is temporary.
 ### Requirements
 
 - **GHC** — tested with 9.10.3
-- **Stack** — for deterministic dependency management (resolver: lts-24.34)
+- **Stack** — deterministic dependency management
 - **C++20 compiler** — GCC or Clang
 - **PortAudio** — must be installed separately on your system
 - **Q** (C++20 library) — infra and q_lib modules, included as git
