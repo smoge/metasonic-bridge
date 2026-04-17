@@ -31,11 +31,11 @@ library:
   source-dirs: src
   exposed-modules:
     - MetaSonic.Types
-    - MetaSonic.Source
-    - MetaSonic.Validate
-    - MetaSonic.IR
-    - MetaSonic.Compile
-    - MetaSonic.FFI
+    - MetaSonic.Bridge.Source
+    - MetaSonic.Bridge.Validate
+    - MetaSonic.Bridge.IR
+    - MetaSonic.Bridge.Compile
+    - MetaSonic.Bridge.FFI
     - MetaSonic.Visualize.Trace
     - MetaSonic.Visualize.TUI
 
