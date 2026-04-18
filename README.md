@@ -152,7 +152,7 @@ sequence. After exiting the inspector (`q` or `Esc`), a compilation summary
 prints to stdout and audio begins. With `--inspect-only`, audio is skipped
 entirely.
 
-![TUI Inspector](./img/tui=inspector.png)
+![TUI Inspector](./img/tui-inspector.png)
 
 ---
 
