@@ -1,7 +1,7 @@
 set shell := ["bash", "-cu"]
 
 cpp_build_dir := "build-cpp"
-cpp_exe := "rt_graph_sanity"
+cpp_exe := "rt_graph_smoke"
 
 default:
     just --list
