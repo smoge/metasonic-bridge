@@ -26,9 +26,9 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
-#include <numbers>
 #include <span>
 #include <thread>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -429,12 +429,19 @@ void set_osc_initial_phase(NodeRuntime &node, float value) noexcept {
   }
 
   const float frac = std::isfinite(value) ? value - std::floor(value) : 0.0F;
+
+  // Note [Phase setting semantics]
+  // q::phase_iterator has no public API for setting _phase independently of _step.
+  // phase_iterator::set(freq, sps) updates only _step.
+  // operator=(phase) also sets _step, not _phase — a counterintuitive trap.
+  //
+  // Let's keep this direct field access here so a Q API change breaks in one place...
   osc->phase_iter._phase = q::frac_to_phase(static_cast<double>(frac));
 }
 
 /* Note [SinOsc processing semantics]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-SinOsc uses q::phase_iterator for phase accumulation and q::sin_synth as
+SinOsc uses q::phase_iterator for phase accumulation and q::sin as
 sample-computing function.
 
   * q::phase uses a 1.31 fixed-point format (uint32). The uint32 range maps to
@@ -684,6 +691,9 @@ static void process_graph(RTGraph &g, int nframes) noexcept {
       break;
     case NodeKind::LPF:
       process_lpf(g, i, nframes);
+      break;
+    default:
+      assert(false && "unhandled NodeKind in process_graph");
       break;
     }
   }
