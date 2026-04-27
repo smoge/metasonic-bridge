@@ -10,6 +10,7 @@
 #include "rt_graph.h"
 
 #include <q/fx/biquad.hpp>
+#include <q/support/phase.hpp>
 #include <q/synth/noise_gen.hpp>
 #include <q/synth/saw_osc.hpp>
 #include <q/synth/sin_osc.hpp>
@@ -420,6 +421,17 @@ static void clear_output_buses(RTGraph &g, int nframes) noexcept {
   }
 }
 
+void set_osc_initial_phase(NodeRuntime &node, float value) noexcept {
+  auto *osc = std::get_if<OscState>(&node.state);
+  assert(osc && "oscillator node has non-oscillator state");
+  if (!osc) {
+    return;
+  }
+
+  const float frac = std::isfinite(value) ? value - std::floor(value) : 0.0F;
+  osc->phase_iter._phase = q::frac_to_phase(static_cast<double>(frac));
+}
+
 /* Note [SinOsc processing semantics]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 SinOsc uses q::phase_iterator for phase accumulation and q::sin_synth as
@@ -433,7 +445,7 @@ sample-computing function.
     phase is preserved. Calling it every block implements block-rate
     frequency control without phase discontinuities.
 
-  * q::sin_synth is a pure function that carries no mutable state.
+  * q::sin is a lookup-table sine that carries no mutable state.
 */
 
 static void process_sinosc(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
@@ -961,6 +973,10 @@ void rt_graph_set_control(RTGraph *g, int node_index, int control_index, float v
   if (node.kind == NodeKind::Out && cidx == 0 && value >= 0.0f) {
     const auto bus = static_cast<std::size_t>(static_cast<int>(value));
     ensure_output_bus_count(*g, bus + 1);
+  }
+
+  if (cidx == 1 && (node.kind == NodeKind::SinOsc || node.kind == NodeKind::SawOsc)) {
+    set_osc_initial_phase(node, value);
   }
 }
 
