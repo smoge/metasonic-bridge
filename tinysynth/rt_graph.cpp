@@ -27,6 +27,7 @@
 #include <numbers>
 #include <span>
 #include <thread>
+#include <variant>
 #include <vector>
 
 namespace q = cycfi::q;
@@ -137,14 +138,13 @@ struct InputRef {
   PortIndex src_port{};
 };
 
-// The phase state for SinOsc. q::phase_iterator owns the 1.31 fixed-point
-// accumulator and per-sample increment. Fixed-point phase wraps
-// at 2pi with uint32 overflow — no fmod, no conditional branch
-struct SinOscState {
-  q::phase_iterator phase_iter;
-};
-
-struct SawOscState {
+// Shared oscillator phase state. q::phase_iterator owns the 1.31 fixed-point
+// accumulator and per-sample increment. Fixed-point phase wraps at 2pi with
+// uint32 overflow — no fmod, no conditional branch.
+//
+// *Osc oscillators differ only in waveshaping function, not in
+// phase-accumulation state, so all Osc nodes use OscState.
+struct OscState {
   q::phase_iterator phase_iter;
 };
 
@@ -161,6 +161,10 @@ struct LPFState {
   float last_freq = -1.0f;
   float last_q = -1.0f;
 };
+
+// Stateless nodes use monostate: this keeps each runtime node from dealing
+// directly with every possible state object.
+using NodeState = std::variant<std::monostate, OscState, NoiseGenState, LPFState>;
 
 /* Note [NodeRuntime layout]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -185,10 +189,7 @@ struct NodeRuntime {
   std::vector<float> controls;
   std::vector<InputRef> input_refs;
   std::vector<std::vector<float>> outputs;
-  SinOscState sinosc{};
-  SawOscState sawosc{};
-  NoiseGenState noisegen{};
-  LPFState lpf{};
+  NodeState state{};
 };
 
 // View one output buffer as a span over the first nframes samples.
@@ -262,16 +263,14 @@ static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
   node.controls.clear();
   node.input_refs.clear();
   node.outputs.clear();
-  node.sinosc = {};
-  node.sawosc = {};
-  node.noisegen = {};
-  node.lpf = {};
+  node.state = std::monostate{};
 
   switch (kind) {
   case NodeKind::SinOsc:
     node.controls.resize(2, 0.0f); // [freq, initial_phase]
     node.input_refs.resize(2);     // [freq_in, phase_in]
     node.outputs.resize(1);
+    node.state = OscState{};
     break;
 
   case NodeKind::Out:
@@ -290,17 +289,20 @@ static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
     node.controls.resize(2, 0.0f); // [freq, initial_phase]
     node.input_refs.resize(2);     // [freq_in, phase_in]
     node.outputs.resize(1);
+    node.state = OscState{};
     break;
 
   case NodeKind::NoiseGen:
     // No controls, no inputs — pure source
     node.outputs.resize(1);
+    node.state = NoiseGenState{};
     break;
 
   case NodeKind::LPF:
     node.controls = {1000.0f, 0.707f}; // [cutoff_freq, q]
     node.input_refs.resize(3);         // [signal_in, freq_in, q_in]
     node.outputs.resize(1);
+    node.state = LPFState{};
     break;
   }
 
@@ -439,12 +441,13 @@ static void process_sinosc(RTGraph &g, std::size_t node_idx, int nframes) noexce
   const auto freq_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
 
   const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
+  auto &osc = std::get<OscState>(node.state);
 
   // update per-sample increment, preserving accumulated phase across blocks
-  node.sinosc.phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
+  osc.phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
 
   for (int i = 0; i < nframes; ++i) {
-    out[static_cast<std::size_t>(i)] = q::sin(node.sinosc.phase_iter++);
+    out[static_cast<std::size_t>(i)] = q::sin(osc.phase_iter++);
   }
 }
 
@@ -468,10 +471,11 @@ static void process_sawosc(RTGraph &g, std::size_t node_idx, int nframes) noexce
   const auto freq_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
 
   const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
-  node.sawosc.phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
+  auto &osc = std::get<OscState>(node.state);
+  osc.phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
 
   for (int i = 0; i < nframes; ++i) {
-    out[static_cast<std::size_t>(i)] = q::saw(node.sawosc.phase_iter++);
+    out[static_cast<std::size_t>(i)] = q::saw(osc.phase_iter++);
   }
 }
 
@@ -489,9 +493,10 @@ No controls or inputs.
 static void process_noisegen(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
   NodeRuntime &node = g.nodes[node_idx];
   auto out = output_span(node, PortIndex{0}, nframes);
+  auto &noisegen = std::get<NoiseGenState>(node.state);
 
   for (int i = 0; i < nframes; ++i) {
-    out[static_cast<std::size_t>(i)] = node.noisegen.noise();
+    out[static_cast<std::size_t>(i)] = noisegen.noise();
   }
 }
 
@@ -525,17 +530,19 @@ static void process_lpf(RTGraph &g, std::size_t node_idx, int nframes) noexcept 
   const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
   const float q_val = !q_in.empty() ? q_in[0] : node.controls[1];
 
-  if (freq != node.lpf.last_freq || q_val != node.lpf.last_q) {
-    node.lpf.filter.config(
+  auto &lpf = std::get<LPFState>(node.state);
+
+  if (freq != lpf.last_freq || q_val != lpf.last_q) {
+    lpf.filter.config(
         q::frequency{static_cast<double>(freq)}, g.sample_rate, static_cast<double>(q_val)
     );
-    node.lpf.last_freq = freq;
-    node.lpf.last_q = q_val;
+    lpf.last_freq = freq;
+    lpf.last_q = q_val;
   }
 
   for (int i = 0; i < nframes; ++i) {
     const std::size_t fi = static_cast<std::size_t>(i);
-    out[fi] = node.lpf.filter(sig_in[fi]);
+    out[fi] = lpf.filter(sig_in[fi]);
   }
 }
 
