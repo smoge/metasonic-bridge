@@ -30,8 +30,11 @@ module MetaSonic.Bridge.Source
   , runSynth
   , -- * DSL combinators
     sinOsc
+  , sawOsc
+  , noiseGen
   , out
   , gain
+  , lpf
   , -- * Dependency extraction
     dependencies
   ) where
@@ -218,6 +221,12 @@ data UGen
     -- reintroduces it into the graph as a source node.
   | SinOsc !Connection !Connection
     -- ^ Sine oscillator: frequency, initial phase.
+  | SawOsc !Connection !Connection
+    -- ^ Bandlimited sawtooth oscillator: frequency, initial phase.
+  | NoiseGen
+    -- ^ White noise generator. No connections; pure source.
+  | LPF !Connection !Connection !Connection
+    -- ^ Low-pass filter: signal in, cutoff frequency, Q factor.
   | Gain !Connection !Connection
     -- ^ Multiply: input signal, gain amount.
   deriving stock    (Eq, Show, Generic)
@@ -351,6 +360,20 @@ sinOsc :: Float -> Float -> SynthM NodeID
 sinOsc freq phase =
   insertNode "sinOsc" (SinOsc (Param freq) (Param phase))
 
+-- | Create a bandlimited sawtooth oscillator.
+sawOsc :: Float -> Float -> SynthM NodeID
+sawOsc freq phase =
+  insertNode "sawOsc" (SawOsc (Param freq) (Param phase))
+
+-- | Create a white noise generator.
+noiseGen :: SynthM NodeID
+noiseGen = insertNode "noiseGen" NoiseGen
+
+-- | Create a low-pass filter.
+lpf :: NodeID -> Float -> Float -> SynthM NodeID
+lpf src freq q =
+  insertNode "lpf" (LPF (Audio src (PortIndex 0)) (Param freq) (Param q))
+
 -- | Create a hardware output node.
 --
 -- Writes a signal to a final output channel intended for the
@@ -364,16 +387,15 @@ out channel src =
 
 -- | Write a signal to a shared intermediate bus.
 --
--- The @Int@ argument selects the bus index. The signal written
+-- The Int argument selects the bus index. The signal written
 -- here may be read later by other subgraphs or synth fragments
 -- using 'busIn'.
 --
 -- Unlike 'out', this does not target the hardware device. It is
--- part of the internal routing system and will carry
--- a 'BusWrite' effect.
+-- part of the internal routing.
 --
 -- This is a terminal node: it introduces a side effect
--- (writing to a bus) but doesn't produce a downstream signal.
+-- (writing to a bus) but doesn't returns/produce a downstream signal.
 busOut :: Int -> NodeID -> SynthM ()
 busOut bus src =
   void $ insertNode "busOut" (BusOut bus (Audio src (PortIndex 0)))
@@ -414,6 +436,9 @@ dependencies = \case
   BusOut _ a  -> deps [a]
   BusIn _     -> []
   SinOsc a b  -> deps [a, b]
+  SawOsc a b  -> deps [a, b]
+  NoiseGen    -> []
+  LPF a b c   -> deps [a, b, c]
   Gain a b    -> deps [a, b]
   where
     deps = foldr step []

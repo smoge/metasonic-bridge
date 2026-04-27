@@ -39,11 +39,56 @@ fanOutGraph = runSynth $ do
   out 0 g1
   out 1 g2
 
+sawGraph :: SynthGraph
+sawGraph = runSynth $ do
+  osc <- sawOsc 440.0 0.0
+  g   <- gain osc 0.4
+  out 0 g
+
+noiseGraph :: SynthGraph
+noiseGraph = runSynth $ do
+  n <- noiseGen
+  g <- gain n 0.15
+  out 0 g
+
+-- noise through a lowpass filter.
+noiseLpfGraph :: SynthGraph
+noiseLpfGraph = runSynth $ do
+  n <- noiseGen
+  f <- lpf n 800.0 0.7
+  g <- gain f 0.4
+  out 0 g
+
+-- low saw through a slightly resonant lpf
+-- q > 1 results in a peak at the cutoff
+filteredSawGraph :: SynthGraph
+filteredSawGraph = runSynth $ do
+  osc <- sawOsc 110.0 0.0
+  f   <- lpf osc 1200.0 1.5
+  g   <- gain f 0.6
+  out 0 g
+
+-- two detuned saws summed onto bus 0
+-- 0.5 Hz offset creates a slow beating effect
+detunedSawGraph :: SynthGraph
+detunedSawGraph = runSynth $ do
+  osc1 <- sawOsc 220.0 0.0
+  osc2 <- sawOsc 220.5 0.5   --  phase offset avoids phase cancellation
+  g1   <- gain osc1 0.3
+  g2   <- gain osc2 0.3
+  out 0 g1
+  out 0 g2                   -- second out accumulates onto same bus
+
 demoTable :: [Demo]
 demoTable =
-  [ Demo "simple" "Simple (SinOsc → Out)"              simpleGraph
-  , Demo "chain"  "Chain (SinOsc → Gain → Out)"        chainGraph
-  , Demo "fanout" "Fan-out (SinOsc → 2×Gain → 2×Out)"  fanOutGraph
+  [ Demo "simple"    "Simple (SinOsc → Out)"                           simpleGraph
+  , Demo "chain"     "Chain (SinOsc → Gain → Out)"                     chainGraph
+  , Demo "fanout"    "Fan-out (SinOsc → 2×Gain → 2×Out)"               fanOutGraph
+  , Demo "saw"       "Saw oscillator (SawOsc → Gain → Out)"            sawGraph
+  , Demo "noise"     "White noise (NoiseGen → Gain → Out)"             noiseGraph
+  , Demo "noise-lpf" "Filtered noise (NoiseGen → LPF → Gain → Out)"   noiseLpfGraph
+  , Demo "saw-lpf"   "Resonant bass (SawOsc → LPF → Gain → Out)"      filteredSawGraph
+  , Demo "detune"    "Detuned saws (2×SawOsc beating → bus 0 → Out)"  detunedSawGraph
   ]
 
 data Demo = Demo
@@ -255,7 +300,7 @@ runAudio rg =
           ready <- waitAudioStarted rt audioReadyTimeoutMs
           if ready
             then do
-              putStrLn "  Audio running. Press Enter to stop this example."
+              putStrLn "  Press Enter to stop audio."
               _ <- getLine
               pure ()
             else
@@ -263,8 +308,6 @@ runAudio rg =
                 "  Audio stream opened, but the callback did not report "
                 <> "ready within " <> show audioReadyTimeoutMs <> " ms."
 
-
--- Pretty-printers:
 
 printIRNode :: NodeIR -> IO ()
 printIRNode n =

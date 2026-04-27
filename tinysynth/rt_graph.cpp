@@ -3,23 +3,16 @@
 // Description : runtime DSP engine and realtime audio backend
 // ================================================================
 //
-// On the Haskell side, compilation ends at RuntimeGraph: a dense,
-// execution-ordered list of nodes whose inputs already refer to
-// concrete runtime indices. On the C++ side, this file turns that
-// dense structure into preallocated node state, block processors,
-// output buses, and realtime audio stream.
-//
-//   * Haskell is responsible for graph construction, validation,
-//     topological ordering, region analysis, and dense lowering.
-//
-//   * C++ is responsible for block execution, node-local state,
-//     buffer ownership, signal propagation, and audio-device I/O.
-//
+// On the Haskell side, compilation ends at RuntimeGraph. On the C++ side, this
+// file turns that dense structure into preallocated node state, block
+// processors, output buses, and realtime audio stream.
 
 #include "rt_graph.h"
 
 #include <q/fx/biquad.hpp>
-#include <q/synth/sin_synth.hpp>
+#include <q/synth/noise_gen.hpp>
+#include <q/synth/saw_osc.hpp>
+#include <q/synth/sin_osc.hpp>
 #include <q_io/audio_device.hpp>
 #include <q_io/audio_stream.hpp>
 
@@ -53,11 +46,10 @@ By the time control reaches this file, there is no symbolic lookup,
 no map from user-facing names to nodes, and no scheduling work left to
 perform.
 
-This matters for both simplicity and realtime safety.
+This matters for both simplicity and safety.
 
 The small wrapper structs below preserve nominal distinctions between
-node positions, port positions, and control slots, even though they are
-all represented as ints at the machine level.
+node positions, port positions, and control slots.
 */
 
 namespace {
@@ -98,20 +90,27 @@ struct ControlIndex {
 
 /* Note [Runtime node kind tags]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-NodeKind must stay aligned with the integer tags emitted by the Haskell
-compiler.
+NodeKind must align with the integer tags emitted by the compiler.
 
   Haskell (MetaSonic.Types.kindTag)    C++ (NodeKind)
   ---------------------------------    --------------
-  kindTag KSinOsc = 1                  SinOsc = 1
-  kindTag KOut    = 2                  Out    = 2
-  kindTag KGain   = 3                  Gain   = 3
+  kindTag KSinOsc   = 1                SinOsc   = 1
+  kindTag KOut      = 2                Out      = 2
+  kindTag KGain     = 3                Gain     = 3
+  kindTag KSawOsc   = 5                SawOsc   = 5
+  kindTag KNoiseGen = 6                NoiseGen = 6
+  kindTag KLPF      = 7                LPF      = 7
 
-The runtime does not perform any negotiation here.
-`rt_graph_add_node` can decode them directly.
 */
 
-enum class NodeKind : int { SinOsc = 1, Out = 2, Gain = 3 };
+enum class NodeKind : int {
+  SinOsc = 1,
+  Out = 2,
+  Gain = 3,
+  SawOsc = 5,
+  NoiseGen = 6,
+  LPF = 7,
+};
 
 /* Note [Input references and control fallback]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -142,9 +141,25 @@ struct InputRef {
 // accumulator and per-sample increment. Fixed-point phase wraps
 // at 2pi with uint32 overflow — no fmod, no conditional branch
 struct SinOscState {
-  // float phase = 0.0f;
-  // bool phase_initialized = false;
   q::phase_iterator phase_iter;
+};
+
+struct SawOscState {
+  q::phase_iterator phase_iter;
+};
+
+struct NoiseGenState {
+  q::white_noise_gen noise;
+};
+
+// LPF holds a q::lowpass biquad and the last-applied freq/q so the filter is
+// _only_ reconfigured when a parameter changes (block-rate). last_freq/last_q
+// are initialised to -1 so the first process call reconfigures with the node's
+// controls.
+struct LPFState {
+  q::lowpass filter{q::frequency{1000.0}, kDefaultSampleRate, 0.707};
+  float last_freq = -1.0f;
+  float last_q = -1.0f;
 };
 
 /* Note [NodeRuntime layout]
@@ -171,6 +186,9 @@ struct NodeRuntime {
   std::vector<InputRef> input_refs;
   std::vector<std::vector<float>> outputs;
   SinOscState sinosc{};
+  SawOscState sawosc{};
+  NoiseGenState noisegen{};
+  LPFState lpf{};
 };
 
 // View one output buffer as a span over the first nframes samples.
@@ -245,6 +263,9 @@ static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
   node.input_refs.clear();
   node.outputs.clear();
   node.sinosc = {};
+  node.sawosc = {};
+  node.noisegen = {};
+  node.lpf = {};
 
   switch (kind) {
   case NodeKind::SinOsc:
@@ -262,6 +283,23 @@ static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
   case NodeKind::Gain:
     node.controls.resize(1, 1.0f); // [gain_amount]
     node.input_refs.resize(2);     // [signal_in, gain_in]
+    node.outputs.resize(1);
+    break;
+
+  case NodeKind::SawOsc:
+    node.controls.resize(2, 0.0f); // [freq, initial_phase]
+    node.input_refs.resize(2);     // [freq_in, phase_in]
+    node.outputs.resize(1);
+    break;
+
+  case NodeKind::NoiseGen:
+    // No controls, no inputs — pure source
+    node.outputs.resize(1);
+    break;
+
+  case NodeKind::LPF:
+    node.controls = {1000.0f, 0.707f}; // [cutoff_freq, q]
+    node.input_refs.resize(3);         // [signal_in, freq_in, q_in]
     node.outputs.resize(1);
     break;
   }
@@ -399,15 +437,105 @@ static void process_sinosc(RTGraph &g, std::size_t node_idx, int nframes) noexce
   NodeRuntime &node = g.nodes[node_idx];
   auto out = output_span(node, PortIndex{0}, nframes);
   const auto freq_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
-  const auto phase_in = resolve_input(g.nodes, node, PortIndex{1}, nframes);
 
-  const float ph0 = !phase_in.empty() ? phase_in[0] : node.controls[1];
+  const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
 
-  // Update per-sample increment. Preserves accumulated phase across blocks.
+  // update per-sample increment, preserving accumulated phase across blocks
   node.sinosc.phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
 
   for (int i = 0; i < nframes; ++i) {
-    out[static_cast<std::size_t>(i)] = sin(node.sinosc.phase_iter++);
+    out[static_cast<std::size_t>(i)] = q::sin(node.sinosc.phase_iter++);
+  }
+}
+
+/* Note [SawOsc processing semantics]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+SawOsc is just like SinOsc: q::phase_iterator accumulates phase across blocks
+and q::saw computes.
+
+In the case of SawOsc, it uses poly-BLEP antialiasing. The phase_iterator
+supplies both the current phase and the per-sample step (dt) for BLEP correction
+term.
+
+Frequency is block-latched for now. TODO: implement frequency control at sample
+rate.
+*/
+
+static void process_sawosc(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
+  NodeRuntime &node = g.nodes[node_idx];
+  auto out = output_span(node, PortIndex{0}, nframes);
+  const auto freq_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
+
+  const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
+  node.sawosc.phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
+
+  for (int i = 0; i < nframes; ++i) {
+    out[static_cast<std::size_t>(i)] = q::saw(node.sawosc.phase_iter++);
+  }
+}
+
+/* Note [NoiseGen processing semantics]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+NoiseGen uses q::white_noise_gen, a fast xorshift PRNG, values uniformly in [-1,
+1]. The generator state persists across blocks, so the noise stream is
+continuous.
+
+No controls or inputs.
+
+*/
+
+static void process_noisegen(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
+  NodeRuntime &node = g.nodes[node_idx];
+  auto out = output_span(node, PortIndex{0}, nframes);
+
+  for (int i = 0; i < nframes; ++i) {
+    out[static_cast<std::size_t>(i)] = node.noisegen.noise();
+  }
+}
+
+/* Note [LPF processing semantics]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+LPF uses q::lowpass, a biquad IIR low-pass filter (Audio-EQ Cookbook).
+
+Cutoff frequency and q are block-latched: read once per block from an input port
+if connected, otherwise from the control defaults. The filter should be
+reconfigured via biquad::config when parameters change, but reconfiguration updates
+the five coefficients without resetting the delay state, so there is no
+discontinuity beyond the filter's own transient.
+
+If the signal input is unconnected, output is silence.
+*/
+
+static void process_lpf(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
+  NodeRuntime &node = g.nodes[node_idx];
+  auto out = output_span(node, PortIndex{0}, nframes);
+  const auto sig_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
+
+  if (sig_in.empty()) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
+  }
+
+  const auto freq_in = resolve_input(g.nodes, node, PortIndex{1}, nframes);
+  const auto q_in = resolve_input(g.nodes, node, PortIndex{2}, nframes);
+
+  const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
+  const float q_val = !q_in.empty() ? q_in[0] : node.controls[1];
+
+  if (freq != node.lpf.last_freq || q_val != node.lpf.last_q) {
+    node.lpf.filter.config(
+        q::frequency{static_cast<double>(freq)}, g.sample_rate, static_cast<double>(q_val)
+    );
+    node.lpf.last_freq = freq;
+    node.lpf.last_q = q_val;
+  }
+
+  for (int i = 0; i < nframes; ++i) {
+    const std::size_t fi = static_cast<std::size_t>(i);
+    out[fi] = node.lpf.filter(sig_in[fi]);
   }
 }
 
@@ -507,6 +635,15 @@ static void process_graph(RTGraph &g, int nframes) noexcept {
       break;
     case NodeKind::Gain:
       process_gain(g, i, nframes);
+      break;
+    case NodeKind::SawOsc:
+      process_sawosc(g, i, nframes);
+      break;
+    case NodeKind::NoiseGen:
+      process_noisegen(g, i, nframes);
+      break;
+    case NodeKind::LPF:
+      process_lpf(g, i, nframes);
       break;
     }
   }
@@ -704,8 +841,7 @@ rt_graph_clear is the graph-reload entry point.
 
 It stops active audio, resets the sample rate to the default placeholder value,
 removes all nodes and output buses, and preserves the graph handle for reuse.
-This matches the Haskell loading protocol, where a single RTGraph handle may be
-repeatedly cleared and repopulated by loadRuntimeGraph.
+
 */
 
 void rt_graph_clear(RTGraph *g) {
@@ -738,6 +874,15 @@ void rt_graph_add_node(RTGraph *g, int node_index, int node_kind) {
     break;
   case 3:
     kind = NodeKind::Gain;
+    break;
+  case 5:
+    kind = NodeKind::SawOsc;
+    break;
+  case 6:
+    kind = NodeKind::NoiseGen;
+    break;
+  case 7:
+    kind = NodeKind::LPF;
     break;
   default:
     std::fprintf(stderr, "Unknown node kind: %d\n", node_kind);

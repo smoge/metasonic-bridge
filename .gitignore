@@ -152,3 +152,5 @@ stack.yaml.lock
 docs/_site/
 drafts/
 build/
+build-cpp/
+draft/
