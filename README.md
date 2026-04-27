@@ -162,7 +162,7 @@ The DSL for building graphs looks like this (these are some of the
 included demos, one can play audio and inspect each one via TUI):
 
 ```haskell
-chainGraph  :: SynthGraph
+chainGraph :: SynthGraph
 chainGraph = runSynth $ do
   osc <- sinOsc 440.0 0.0
   g   <- gain osc 0.5
@@ -175,6 +175,42 @@ fanOutGraph = runSynth $ do
   g2  <- gain osc 0.7
   out 0 g1
   out 1 g2
+
+sawGraph :: SynthGraph
+sawGraph = runSynth $ do
+  osc <- sawOsc 440.0 0.0
+  g   <- gain osc 0.4
+  out 0 g
+
+noiseGraph :: SynthGraph
+noiseGraph = runSynth $ do
+  n <- noiseGen
+  g <- gain n 0.15
+  out 0 g
+
+noiseLpfGraph :: SynthGraph
+noiseLpfGraph = runSynth $ do
+  n <- noiseGen
+  f <- lpf n 800.0 0.7
+  g <- gain f 0.4
+  out 0 g
+
+filteredSawGraph :: SynthGraph
+filteredSawGraph = runSynth $ do
+  osc <- sawOsc 110.0 0.0
+  f   <- lpf osc 1200.0 1.5
+  g   <- gain f 0.6
+  out 0 g
+
+detunedSawGraph :: SynthGraph
+detunedSawGraph = runSynth $ do
+  osc1 <- sawOsc 220.0 0.0
+  osc2 <- sawOsc 220.5 0.5
+  g1   <- gain osc1 0.3
+  g2   <- gain osc2 0.3
+  out 0 g1
+  out 0 g2
+
 ```
 
 This syntax belongs to `metasonic-bridge` — the compilation layer that
