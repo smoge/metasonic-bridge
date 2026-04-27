@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -441,13 +442,18 @@ static void process_sinosc(RTGraph &g, std::size_t node_idx, int nframes) noexce
   const auto freq_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
 
   const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
-  auto &osc = std::get<OscState>(node.state);
+  auto *osc = std::get_if<OscState>(&node.state);
+  assert(osc && "SinOsc node has non-oscillator state");
+  if (!osc) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
+  }
 
   // update per-sample increment, preserving accumulated phase across blocks
-  osc.phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
+  osc->phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
 
   for (int i = 0; i < nframes; ++i) {
-    out[static_cast<std::size_t>(i)] = q::sin(osc.phase_iter++);
+    out[static_cast<std::size_t>(i)] = q::sin(osc->phase_iter++);
   }
 }
 
@@ -471,11 +477,16 @@ static void process_sawosc(RTGraph &g, std::size_t node_idx, int nframes) noexce
   const auto freq_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
 
   const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
-  auto &osc = std::get<OscState>(node.state);
-  osc.phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
+  auto *osc = std::get_if<OscState>(&node.state);
+  assert(osc && "SawOsc node has non-oscillator state");
+  if (!osc) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
+  }
+  osc->phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
 
   for (int i = 0; i < nframes; ++i) {
-    out[static_cast<std::size_t>(i)] = q::saw(osc.phase_iter++);
+    out[static_cast<std::size_t>(i)] = q::saw(osc->phase_iter++);
   }
 }
 
@@ -493,10 +504,15 @@ No controls or inputs.
 static void process_noisegen(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
   NodeRuntime &node = g.nodes[node_idx];
   auto out = output_span(node, PortIndex{0}, nframes);
-  auto &noisegen = std::get<NoiseGenState>(node.state);
+  auto *noisegen = std::get_if<NoiseGenState>(&node.state);
+  assert(noisegen && "NoiseGen node has non-noisegen state");
+  if (!noisegen) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
+  }
 
   for (int i = 0; i < nframes; ++i) {
-    out[static_cast<std::size_t>(i)] = noisegen.noise();
+    out[static_cast<std::size_t>(i)] = noisegen->noise();
   }
 }
 
@@ -530,19 +546,24 @@ static void process_lpf(RTGraph &g, std::size_t node_idx, int nframes) noexcept 
   const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
   const float q_val = !q_in.empty() ? q_in[0] : node.controls[1];
 
-  auto &lpf = std::get<LPFState>(node.state);
+  auto *lpf = std::get_if<LPFState>(&node.state);
+  assert(lpf && "LPF node has non-LPF state");
+  if (!lpf) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
+  }
 
-  if (freq != lpf.last_freq || q_val != lpf.last_q) {
-    lpf.filter.config(
+  if (freq != lpf->last_freq || q_val != lpf->last_q) {
+    lpf->filter.config(
         q::frequency{static_cast<double>(freq)}, g.sample_rate, static_cast<double>(q_val)
     );
-    lpf.last_freq = freq;
-    lpf.last_q = q_val;
+    lpf->last_freq = freq;
+    lpf->last_q = q_val;
   }
 
   for (int i = 0; i < nframes; ++i) {
     const std::size_t fi = static_cast<std::size_t>(i);
-    out[fi] = lpf.filter(sig_in[fi]);
+    out[fi] = lpf->filter(sig_in[fi]);
   }
 }
 
