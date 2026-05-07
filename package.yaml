@@ -12,13 +12,20 @@ dependencies:
   - containers
   - mtl
   - deepseq
+  # Terminal UI Inspector:
+  - brick
+  - vty
+  - vty-crossplatform
+  - microlens
+  - microlens-th
+  - microlens-mtl
 
 ghc-options:
   - -Wall
 
 # MetaSonic modules live here. The C++ runtime is
-# compiled as part of the library so that both the executable
-# and future test suites link against the same object.
+# compiled as part of the library, so both the executable
+# and tests link against the same object.
 
 library:
   source-dirs: src
@@ -29,6 +36,8 @@ library:
     - MetaSonic.IR
     - MetaSonic.Compile
     - MetaSonic.FFI
+    - MetaSonic.Visualize.Trace
+    - MetaSonic.Visualize.TUI
 
   cxx-sources:
     - cbits/rt_graph.cpp
@@ -50,8 +59,7 @@ library:
     - portaudio
     - portmidi
 
-# Thin app that imports the library. No C++ here — it all
-# comes through the library dependency.
+# Thin app that imports the library. No C++ here
 
 executables:
   metasonic-bridge:
@@ -59,5 +67,6 @@ executables:
     source-dirs: app
     ghc-options:
       - -O2
+      - -threaded
     dependencies:
       - metasonic-bridge

@@ -13,11 +13,7 @@ cover significantly more detail than this file. For a conceptual picture of the
 system, read the code in pipeline order starting from
 [`src/MetaSonic/Types.hs`](./src/MetaSonic/Types.hs).
 
-See [ROADMAP.md](./ROADMAP.md) for current progress and next planned steps.
-For deeper design discussion and reasoning, see the
-[blog](https://smoge.github.io/metasonic-bridge).
-
-> *Don't run the graph. Compile it.*
+For deeper design discussion and reasoning, see the [blog](https://smoge.github.io/metasonic-bridge).
 
 ```
 Haskell DSL → SynthGraph → GraphIR → RuntimeGraph → DSP Engine
@@ -30,23 +26,17 @@ Everything is resolved before the C++ layer sees it.
 
 ## Motivation
 
-Most audio environments combine graph composition, scheduling, signal
-processing, and state management into a single layer. Convenient at first — but
-complexity grows, and reasoning becomes difficult.
-
-MetaSonic draws a line:
-
-```
-graph construction ≠ signal execution
-```
-
-Graph building is a compiler problem. DSP is a runtime problem. Two worlds:
+At this development stage, graph building is a compiler problem. DSP is a
+runtime problem. Two worlds:
 
 - **Haskell** — builds, analyzes, compiles
 - **C++20** — executes DSP, deterministic and strict
 
 You don't evaluate structure at runtime. You build, validate, order, compile —
 then execute. When audio starts, decisions are already made.
+
+Note: planned changes include adding and modifying graphs without interrupting
+audio. This will require some changes in the C ABI.
 
 ---
 
@@ -56,13 +46,13 @@ then execute. When audio starts, decisions are already made.
 and tested independently:
 
 ```
-metasonic-core       DSL — no C++ dependencies, implemented in pure Haskell
+metasonic-core       DSL — no C++ dependencies, pure Haskell
      ↓
-metasonic-bridge     graph compiler + FFI — Haskell to C++20
+metasonic-bridge     graph compiler+FFI+TUI inspectior
      ↓
-tinysynth            real-time audio engine — pure C++20, depends on and extends q_lib
+tinysynth            real-time audio engine — pure C++20 + q_lib 
      ↓
-metasonic-ui         Dear ImGui interface — visualization + parameter control
+tinysynth-ui         runtime-facing UI on the C++ side 
 ```
 
 - **metasonic-core** defines the user-facing DSL. No FFI involvement. Type
@@ -71,7 +61,7 @@ metasonic-ui         Dear ImGui interface — visualization + parameter control
   marshals across the FFI boundary.
 - **tinysynth** is the audio engine. Plugins are authored and tested entirely in
   C++ — no Haskell toolchain required.
-- **metasonic-ui** provides real-time parameter control and audio visualization
+- **tinysynth-ui** provides real-time parameter control and audio visualization
   through Dear ImGui. It links tinysynth directly for the hot path (knobs,
   meters, FFT display) and `dlopen`s the bridge shared library for structural
   operations (graph editing, recompilation).
@@ -82,7 +72,7 @@ particularly when new tinysynth plugins are introduced — though there are plan
 to derive more of this synchronization from plugin metadata.
 
 As the system stabilizes, all layers will live in a single monorepo while
-keeping their architectural modularity.
+keeping their architectural modularity. This repo layout is temporary.
 
 ---
 
@@ -108,21 +98,77 @@ stack exec metasonic-bridge
 
 ---
 
-## SynthGraph syntax 
+## Usage
+
+The executable supports three run modes and an optional set of demo targets.
+
+```
+stack exec -- metasonic-bridge [MODE] [DEMO ...]
+```
+
+### Run modes
+
+| Flag               | Behavior                                               |
+|--------------------|--------------------------------------------------------|
+| *(default)*        | Compile and play audio directly                        |
+| `--inspect`        | Open the TUI pipeline inspector, then play audio       |
+| `--inspect-only`   | Open the TUI pipeline inspector, skip audio            |
+
+### Demo targets
+
+If no demo names are given, all available demos run in sequence.
+
+To list the available `SynthGraph`s, run:
+
+```sh
+stack exec -- metasonic-bridge --help
+```
+
+### Examples
+
+```sh
+# Play all (audio only)
+stack exec -- metasonic-bridge
+
+# Play a specific SynthGraph
+stack exec -- metasonic-bridge chain
+
+# Inspect a graph with TUI, then play audio
+stack exec -- metasonic-bridge --inspect chain
+
+# Inspect all graphs with no audio
+stack exec -- metasonic-bridge --inspect-only
+
+# Inspect a specific graph
+stack exec -- metasonic-bridge --inspect-only fanout
+```
+
+### Compilation inspector (TUI)
+
+The `--inspect` and `--inspect-only` flags launch a terminal UI built with brick
+that lets you step through every stage of the compilation pipeline for each demo
+graph. When using `--inspect`, the inspector runs for each demo graph in
+sequence. After exiting the inspector (`q` or `Esc`), a compilation summary
+prints to stdout and audio begins. With `--inspect-only`, audio is skipped
+entirely.
+
+![TUI Inspector](./img/tui=inspector.png)
+
+---
+
+## SynthGraph syntax
+
+The DSL for building graphs looks like this (these are some of the
+included demos, one can play audio and inspect each one via TUI):
 
 ```haskell
-simpleGraph :: SynthGraph
-simpleGraph = runSynth $ do
-  osc <- sinOsc 440.0 0.0
-  out 0 osc
-
 chainGraph  :: SynthGraph
 chainGraph = runSynth $ do
   osc <- sinOsc 440.0 0.0
   g   <- gain osc 0.5
   out 0 g
 
-fanOutGraph :: SynthGraph 
+fanOutGraph :: SynthGraph
 fanOutGraph = runSynth $ do
   osc <- sinOsc 440.0 0.0
   g1  <- gain osc 0.3
@@ -131,15 +177,9 @@ fanOutGraph = runSynth $ do
   out 1 g2
 ```
 
-This builds three small graphs — a minimal oscillator (`SinOsc → Out`), a simple
-chain (`SinOsc → Gain → Out`), and a fan-out (`SinOsc → Gain × 2 → Out × 2`) —
-but what actually runs is a compiled, validated, topologically ordered version
-of each.
-
 This syntax belongs to `metasonic-bridge` — the compilation layer that
 constructs IR nodes and lowers them to C++. The authoring DSL in
-`metasonic-core` sits above this, offering alternative interfaces while compiling
-down to the same bridge primitives.
+`metasonic-core` sits above this, offering alternative interfaces.
 
 ---
 
@@ -147,11 +187,7 @@ down to the same bridge primitives.
 
 - Block-based DSP execution
 - Static, precompiled graphs
-- DSP layer grounded on q_lib 
+- DSP layer grounded on q_lib
 - Minimal node set (tinysynth includes q_lib "plugins" and will extend it)
-
----
-
->  *Before the sound breathes, the structure is decided.*
->  *Before the signal moves, the graph is already aligned.*
+- TUI inspector for stepping through compilation stages (use command-line options)
 

@@ -5,30 +5,19 @@
 
 {- Note [Pipeline reading order]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Read the MetaSonic modules in pipeline order — the same order
-a graph flows through during compilation:
+Read the MetaSonic modules in pipeline order
 
   Types → Source → Validate → IR → Compile → FFI
 
 MetaSonic.Types
   It defines every type name that appears in the other modules:
   NodeID, NodeIndex, Rate, Eff, NodeKind.
-  Without this vocabulary nothing else makes sense. It is also
-  where core distinctions (symbolic vs dense identity, rate discipline,
-  resource effects) are defined/grounded in code.
 
 MetaSonic.Source
-  This is where graphs are written:
-  Connection, UGen, SynthGraph, the SynthM builder, and the
-  DSL combinators (sinOsc, out, gain). Reading this answers
-  "what does a MetaSonic program look like?" The dependencies
-  function at the bottom bridges to the next module.
+  This is where graphs are written.
 
 MetaSonic.Validate
   The gate between construction and compilation.
-  checkDependencies and topoSort are self-contained and short.
-  Reading this answers "what makes a graph valid, and how is
-  execution order determined?"
 
 MetaSonic.IR
   The first real compilation pass. This is where the source
@@ -40,23 +29,18 @@ MetaSonic.IR
   vs semantic syntax becomes concrete.
 
 MetaSonic.Compile
-  The architectural core. Read formRegions first (region
-  formation), then compileRuntimeGraph (the decisive
-  NodeID → NodeIndex transformation). The Region and
-  RegionGraph types are where scheduling logic
-  lives. See Note [Region formation] and
-  Note [Dense lowering] in MetaSonic.Compile.
+  Read formRegions (region formation), then compileRuntimeGraph (the decisive
+  NodeID → NodeIndex transformation). The Region and RegionGraph types are where
+  scheduling logic lives. See Note [Region formation] and Note [Dense lowering]
+  in MetaSonic.Compile.
 
 MetaSonic.FFI
-  The boundary. Read this last on the Haskell side.
   loadRuntimeGraph is the marshaling function that walks the
   dense RuntimeGraph and emits FFI calls. After reading this,
   you know exactly what crosses to C++ and in what form.
 
 Then cross to the C++ side: rt_graph.h (the ABI)
-followed by rt_graph.cpp (runtime implementation). The
-header tells you what the Haskell side expects; the .cpp tells
-you how it is fulfilled.
+followed by rt_graph.cpp (runtime implementation).
 -}
 
 -- |
@@ -64,14 +48,12 @@ you how it is fulfilled.
 -- Description : Shared vocabulary for the compilation pipeline
 --
 -- This module defines the types that every stage of the pipeline
--- shares. See Note [Shared vocabulary design] for the design
--- principles, and Note [Pipeline reading order] for the
--- recommended reading sequence.
+-- shares.
 
 module MetaSonic.Types
-  ( -- * Symbolic identifiers (Haskell-side only)
+  ( -- * Symbolic identifiers (only during compilation)
     NodeID (..)
-  , -- * Dense runtime identifiers (cross the FFI boundary)
+  , -- * Runtime identifiers
     NodeIndex (..)
   , PortIndex (..)
   , ControlIndex (..)
@@ -109,7 +91,6 @@ The types in this module reflect three principles:
    these distinctions become explicit. MetaSonic extends
    Faust's list with resource effects, which become essential
    for correct parallel scheduling.
-   See Note [Rate discipline] and Note [Resource effects].
 
 3. The vocabulary is shared, but the flow is one-directional.
    Types defined here are imported by every module from Source
@@ -148,8 +129,6 @@ newtype/struct discipline on both sides.
 -- | A symbolic node identifier, meaningful only during
 -- compilation. After 'MetaSonic.Compile.compileRuntimeGraph',
 -- no 'NodeID' survives into the runtime representation.
---
--- See Note [Symbolic vs dense identifiers].
 newtype NodeID = NodeID Int
   deriving stock   (Eq, Ord, Show, Generic)
   deriving newtype (NFData)
@@ -157,8 +136,6 @@ newtype NodeID = NodeID Int
 -- | A dense position in the runtime node array. Storage
 -- order equals execution order; the runtime iterates
 -- sequentially and never reorders.
---
--- See Note [Symbolic vs dense identifiers].
 newtype NodeIndex = NodeIndex Int
   deriving stock   (Eq, Ord, Show, Generic)
   deriving newtype (NFData)
@@ -174,32 +151,6 @@ newtype PortIndex = PortIndex Int
 newtype ControlIndex = ControlIndex Int
   deriving stock   (Eq, Ord, Show, Generic)
   deriving newtype (NFData)
-
-{- Note [Adding a new node kind]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Each NodeKind constructor corresponds to a DSP kernel on the
-C++ side. The integer tag (kindTag) is the wire format that
-crosses the FFI boundary. Adding a new node kind requires
-changes in both languages:
-
-  Haskell side:
-    1. A constructor in NodeKind (this module)
-    2. A kindTag case (this module)
-    3. A UGen constructor in MetaSonic.Source
-    4. inferKind, inferRate, inferEff cases in MetaSonic.IR
-    5. lowerInputs, extractControls cases in MetaSonic.IR
-
-  C++ side:
-    6. A NodeKind enum value in rt_graph.cpp
-    7. A configure_node case in rt_graph.cpp
-    8. A process_* function in rt_graph.cpp
-    9. A dispatch case in rt_graph_process in rt_graph.cpp
-   10. A case in rt_graph_add_node in rt_graph.cpp
-
-This list will shrink once kernel fusion allows the
-compiler to generate composite kernels that do not correspond
-to a single predefined node kind.
--}
 
 -- | Classification of DSP nodes. Each constructor maps to a
 -- process function on the C++ side.
@@ -320,19 +271,9 @@ The Eff type captures the resource dimension:
               both BusRead and other BusWrite on the same bus
   BufRead   — reads from a shared buffer
   BufWrite  — writes to a shared buffer
-
-Currently all nodes are marked Pure (inferEff in MetaSonic.IR
-returns [Pure] for every node kind). When bus and buffer nodes
-are added, a future MetaSonic.Effects module will walk the
-annotated GraphIR, examine irEffects on each NodeIR, and
-insert implicit dependency edges (E_r) between nodes that
-access the same shared resource. This is necessary before
-parallel execution can preserve sequential semantics.
 -}
 
 -- | Resource effects carried by a node.
---
--- See Note [Resource effects].
 data Eff
   = Pure                -- ^ No shared-resource interaction
   | BusRead  !Int       -- ^ Reads from shared bus N
