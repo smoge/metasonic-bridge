@@ -84,7 +84,9 @@ keeping their architectural modularity.
 
 ## Quick start
 
-Requirements: GHC ≥ 9, a C++20 compiler (GCC or Clang), q_io, and PortAudio.
+Requirements: GHC (tested with GHC 9.10.3 / LTS 24.34), Stack, C++20 compiler
+(GCC or Clang), PortAudio (must be installed separately), and q_io (included as
+a git submodule).
 
 ```sh
 stack build
@@ -109,14 +111,13 @@ of it.
 
 ## Current state
 
-- Minimal node set
 - Block-based DSP execution
 - Static, precompiled graphs
-- Audio output integration in progress (q_io)
-- DSP layer grounded on q_lib
-
+- DSP layer grounded on q_lib 
+- Minimal node set (tinysynth includes q_lib "plugins" and will extend it)
 
 ---
 
-> *Before the sound breathes, the structure is decided.*
-> *Before the signal moves, the graph is already aligned.*
+>  *Before the sound breathes, the structure is decided.*
+>  *Before the signal moves, the graph is already aligned.*
+
