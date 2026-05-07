@@ -9,17 +9,6 @@ description: >
 ---
 
 
-<!-- Following the discussion about UGen code — Cycfi's Q DSP library (q_lib) is
-being evaluated as the primitive layer for MetaSonic/tinysynth. The key
-simplification: Q processors are plain C++ function objects with operator(), no
-base class, no registration, no host contract. Constructed with type-safe
-parameters (q::frequency{440.0}, or 440_Hz in handwritten code), called with
-samples, composed via ordinary function application. The graph runtime, buffer
-management, and lifecycle stay in tinysynth — Q just does the sample math. At
-the FFI boundary: Double for parameters (matching Q's internal precision for
-coefficients), Float for audio buffers. -->
-
-
 There is a moment in the life of every audio project where you have to decide
 what sits at the bottom of the stack. Not the language you compile from, not the
 graph runtime, not the scheduler — but the actual *stuff* that touches samples.
@@ -32,7 +21,8 @@ Q DSP Library](https://github.com/cycfi/q). This post goes into detail on how
 q_lib works internally, what makes it different from writing C++ DSP code in
 other frameworks, how we use it in practice, and how to extend it with your own
 processors. If you're coming from SuperCollider or PD, this should also clarify
-what a "no-framework" approach to audio DSP looks like in modern C++.
+what a "no-framework" approach to audio DSP looks like in modern
+functional-style C++.
 
 ---
 
@@ -49,13 +39,13 @@ q_io    →   audio/MIDI I/O shim (depends on: q_lib, portaudio, portmidi)
 
 This matters. The `q_lib` layer — the one containing all the DSP processors,
 unit types, oscillators, filters, envelopes, and dynamics processors — has
-_zero_ external dependencies. This is not trivial. No PortAudio, no OS headers,
+**zero** external dependencies. This is not trivial. No PortAudio, no OS headers,
 no threading primitives. It's a header-only library you can drop into any C++20
 project by adding the include path.
 
 The `q_io` layer wraps PortAudio and PortMidi behind thin adapters for
 standalone use. The examples and tests use it, but it's explicitly designed to
-be replaced. We will discard it soon. In our case, tinysynth shoud provide its
+be replaced. We will discard it soon. In our case, tinysynth should provide its
 own PortAudio callback and MIDI handling, so we use `q_lib` alone. This is a
 trivial task, because it has been already designed this way by Q's library
 author, Joel de Guzman. 
@@ -106,13 +96,14 @@ The compiler cannot distinguish between 440 (Hz), 440 (samples), or 440
 Q addresses this through distinct wrapper types — frequency, duration, decibel,
 phase, period — that are structurally separate at the type level. A frequency is
 not a duration, and no implicit conversion exists between them. Explicit
-conversions (`as_float`, `as_double`) are required to extract raw numeric
-values. User-defined literals (`440_Hz`, `350_ms`, `24_dB`) construct these
-types from numeric constants with both readability and compile-time safety.
-Separately, Q uses C++20 concepts (`Arithmetic`, `IndexableContainer`,
-`RandomAccessIteratable`) to constrain its generic interfaces — ensuring that
-containers, buffers, and iterators satisfy structural requirements checked at
-compile time rather than failing silently at runtime.
+conversions (`lin_float`, `lin_double`) are required to extract raw numeric
+values (on v.1.0 it was (`as_float` and `as_double` ). User-defined literals
+(`440_Hz`, `350_ms`, `24_dB`) construct these types from numeric constants with
+both readability and compile-time safety. Separately, Q uses C++20 concepts
+(`Arithmetic`, `IndexableContainer`, `RandomAccessIteratable`) to constrain its
+generic interfaces — ensuring that containers, buffers, and iterators satisfy
+structural requirements checked at compile time rather than failing silently at
+runtime.
 
 
 ### The unit types
@@ -122,7 +113,7 @@ Q provides six core unit types:
 `frequency` — cycles per second. Constructed via `440_Hz`, `1.5_kHz`,
  `0.5_MHz`. Internally stores a `double`. Provides a `.period()` method
  returning the reciprocal as a `period` type. Explicit conversion back to raw
- float via `as_float(f)` or `as_double(f)`.
+ float via `lin_float(f)` or `lin_double(f)`.
 
 `duration` — a span of time. Constructed via `350_ms`, `1_s`, `10.5_us`.
  Also backed by `double`. Cannot be accidentally used where a `frequency` is
@@ -140,13 +131,13 @@ Q provides six core unit types:
  Arithmetic wraps naturally at 2π due to the fixed-point representation.
 
 `decibel` — logarithmic ratio. Constructed via `24_dB`, `-3.5_dB`.
- Conversion to linear gain via `as_float(d)`. The library uses decibels
+ Conversion to linear gain via `lin_float(d)`. The library uses decibels
  _natively_ in its dynamics processors — compressors and expanders accept and
  return `decibel` values, processing in the log domain rather than converting
  back and forth.
 
 `interval` (and its derivative **`pitch`**) — musical intervals expressed in
- semitones and cents, with pitch names. Note: This is Q's a somewhat newest unit
+ semitones and cents, with pitch names. **Note**: This newest Q's unit
  type (v1.5-dev) and it connects the frequency system to musical temperament.
 
 ### How this works at the type level
@@ -159,12 +150,12 @@ integer (to get a harmonic), but you cannot add a `frequency` to a `duration`.
 The C++ compiler rejects it.
 
 ```cpp
-auto a = 440_Hz + 220_Hz;    // OK: frequency + frequency → frequency
-auto b = 440_Hz * 3;         // OK: third harmonic
-auto c = 3_ms + 5_ms;        // OK: duration + duration → duration
-auto d = 440_Hz + 3_ms;      // COMPILE ERROR: cannot add frequency and duration
-auto e = 24_dB;              // decibel
-float g = as_float(e);       // explicit conversion: ≈ 15.85
+auto a = 440_Hz + 220_Hz; // OK: frequency + frequency → frequency
+auto b = 440_Hz * 3;      // OK: third harmonic
+auto c = 3_ms + 5_ms;     // OK: duration + duration → duration
+auto d = 440_Hz + 3_ms;   // ERROR: cannot add frequency and duration
+auto e = 24_dB;           // OK: decibel
+float g = lin_float(e);   // Explicit Conversion: ≈ 15.85
 ```
 
 For instance: the literal operators are `constexpr`, so the unit values can be
@@ -204,11 +195,10 @@ Here's the mental model. A processor is an object one:
 2. **calls** with input samples, receiving output samples
 3. **composes** with other processors via ordinary function application
 
-There is no base class. No virtual dispatch. No registration. No RTTI (runthe
-mechanism behind dynamic_cast and typeid that adds overhead when the compiler
-needs to resolve types at runtime rather than at compile time). Because the
-compiler sees the full concrete type of every processor at every call site, it
-can inline aggressively and optimize the entire composition as a single
+There is no base class. No virtual dispatch. No registration. No RTTI — the
+runtime type identification machinery behind dynamic_cast and typeid. Because
+the compiler sees the full concrete type of every processor at every call site,
+it can inline aggressively and optimize the entire composition as a single
 function.
 
 ### Stateless processors
@@ -220,7 +210,7 @@ and phase-increment to sample value:
 ```cpp
 struct square_synth {
     constexpr float operator()(phase p, phase dt) const {
-        constexpr auto middle = phase::max() / 2;
+        constexpr auto middle = phase::middle();
         auto r = p < middle ? 1.0f : -1.0f;
         r += poly_blep(p, dt);
         r -= poly_blep(p + middle, dt);
@@ -241,11 +231,10 @@ sample" from "the thing that accumulates phase."
 In Q, these are distinct objects with distinct types:
 
 ```cpp
-q::phase_iterator phase;              // owns the phase state
-q::square osc;                        // stateless, maps phase → sample
-
-phase.set(440_Hz, 44100);             // configure phase increment
-float sample = osc(phase++);          // advance phase, compute sample
+q::phase_iterator phase;     // owns the phase state
+q::square_osc osc;           // stateless, maps phase 
+phase.set(440_Hz, 44100);    // configure phase increment
+float sample = osc(phase++); // advance phase, compute sample
 ```
 
 ### Stateful processors
@@ -293,14 +282,14 @@ in the code:
 ```cpp
 inline float signal_conditioner::operator()(float s)
 {
-    s = _hp(s);                                    // highpass
-    s = _clip(s);                                  // pre-clip
-    s = _sm(s);                                    // dynamic smoother
-    auto env = _env(std::abs(s));                  // envelope follower
-    auto gate = _gate(env);                        // onset gate
-    s *= _gate_env(gate);                          // apply gate envelope
-    auto env_db = decibel(env);                    // convert to dB
-    auto gain = as_float(_comp(env_db)) * _makeup_gain; // compress
+    s = _hp(s);                   // highpass
+    s = _clip(s);                 // pre-clip
+    s = _sm(s);                   // dynamic smoother
+    auto env = _env(std::abs(s)); // envelope follower
+    auto gate = _gate(env);       // onset gate
+    s *= _gate_env(gate);         // apply gate envelope
+    auto env_db = lin_to_db(env); // convert to dB
+    auto gain = lin_float(_comp(env_db)) * _makeup_gain; // compress
     s = s * gain;
     return s;
 }
@@ -331,7 +320,7 @@ void MyProcessor::next(int nSamples) {
 }
 ```
 
-Inside a SC UGen, you processe a _block_ of samples in a callback. You read from
+Inside a SC UGen, you process a _block_ of samples in a callback. You read from
 input buffers via macros. You write to output buffers via macros. The server
 calls you. Your code is structurally coupled to the sc block-processing model.
 
@@ -395,11 +384,10 @@ operates entirely in the logarithmic domain:
 ```cpp
 q::compressor comp{-18_dB, 1.0/4.0};  // threshold, ratio
 
-// processing loop:
 auto env = env_follower(std::abs(s)); // get linear envelope
-auto env_db = decibel(env);           // convert to dB
+auto env_db = lin_to_db(env);         // convert to dB
 auto gain_db = comp(env_db);          // compress in dB domain
-s *= as_float(gain_db);               // apply gain
+s *= lin_float(gain_db);              // apply gain
 ```
 
 This is a deliberate design choice. Most textbook compressor implementations
@@ -442,7 +430,7 @@ Compare this with the alternative approaches:
 A naive `float` phase accumulator (common in hand-rolled C++ oscillators) has
 only 23 mantissa bits. Near zero the precision is fine, but near the wrap point
 (approaching 1.0 or 2π) it degrades to roughly 8.4 million effective positions
-per cycle — about 512× coarser than distinction `q_lib`'s fixed-point. This
+per cycle — about 512× coarser than `q_lib`'s fixed-point distinction. This
 non-uniform precision is the source of pitch-dependent tuning drift in
 float-based oscillators: higher frequencies accumulate phase faster, spending
 more time near the wrap point where `float` is least precise.
@@ -463,7 +451,7 @@ large number of oscillators per audio block.
 ### Miscellaneous Effects
 
 These are the units that don't fit neatly into the filter/envelope/dynamics
-categories but show up in aprocessing chain:
+categories but show up in a processing chain:
 
 **`delay`** — a fractional delay line backed by a ring buffer with interpolated
  reads. Constructed with a duration and sample rate (`q::delay{350_ms, 44100}`).
@@ -505,7 +493,7 @@ categories but show up in aprocessing chain:
 
 **`schmitt_trigger`** — a comparator with hysteresis: the signal must cross a
  high threshold to turn "on" and a low threshold to turn "off." Prevents rapid
- toggling when a signal hovers near a single threshold. Used internally the
+ toggling when a signal hovers near a single threshold. Used internally in the
  zero-crossing analysis and pitch detection, but useful in any context where you
  need clean boolean events from a noisy continuous signal.
 
@@ -590,7 +578,7 @@ result to the output bus.
 A simple sketch:
 
 ```cpp
-struct LowpassNode {
+struct lowpPass {
     q::lowpass filter;
     void process(std::span<float> in, std::span<float> out, int nframes) {
         for (int i = 0; i < nframes; ++i) {
@@ -751,11 +739,12 @@ into a custom effect, bring the literals into scope and use them freely:
 ```cpp
 using namespace q::literals;
 
+// Much simpler plug-in code writing in many ways, it is closer to writing a
+// SynthDef in SC or Faust code, since there is minimal boilerplate.
 struct ReverbTail {
-    q::delay       dly{80_ms, 44100};
-    q::lowpass     lpf{3_kHz, 44100};
-    q::one_pole_lp smoother{20_ms, 44100};
-    // simpler plug-in code writing
+    q::delay            dly{80_ms, 44100};
+    q::lowpass          lpf{3_kHz, 44100};
+    q::one_pole_lowpass smoother{20_ms, 44100};
 };
 ```
 
@@ -782,9 +771,9 @@ processors to compose naturally with the rest of the library:
 1. **Your processor is a `struct` with `operator()`.**
 
 2. **Construction takes configuration parameters**, not sample data. Sample rate
-is passed as a raw integer or `std::uint32_t` (not a `q_lib` unit type — this is
-a deliberate pragmatic choice since sample rate isn't a "unit" in the same sense
-as frequency or duration).
+is passed as `float sps` (not a `q_lib` unit type — this is a deliberate
+pragmatic choice since sample rate isn't a "unit" in the same sense as frequency
+or duration).
 
 3. **`operator()` takes input values and returns output values.** The
 input/output types depend on the processor: filters take and return `float`,
@@ -834,37 +823,27 @@ float out = lpf(shaper(in)); // shape, then filter
 
 A more interesting example that combines stateful processors with custom logic:
 
+
 ```cpp
 struct feedback_delay {
     q::delay       dly;
     q::lowpass     lpf;
     float          feedback;
-    float          _last = 0.0f;
 
-    feedback_delay(q::duration time, q::frequency cutoff, float fb, std::uint32_t srate)
-        : dly{time, srate}
-        , lpf{cutoff, srate}
+    feedback_delay(q::duration time, q::frequency cutoff, float fb, float sps)
+        : dly{time, sps}
+        , lpf{cutoff, sps}
         , feedback{fb}
     {}
 
     float operator()(float s) {
-        auto delayed = dly();
+        auto delayed  = dly();
         auto filtered = lpf(delayed);
         auto out = s + filtered;
         dly.push(out * feedback);
         return out;
     }
 };
-```
-
-Usage:
-
-```cpp
-feedback_delay delay{350_ms, 2_kHz, 0.7f, 44100};
-
-for (auto i = 0; i < nframes; ++i) {
-    output[i] = delay(input[i]);
-}
 ```
 
 Notice how this follows `q_lib`'s own patterns: construction with typed
@@ -907,18 +886,17 @@ If you're writing a dynamics processor, work in the `decibel` domain to match
 ```cpp
 struct soft_gate {
     q::decibel threshold;
-    float      range_db;
+    q::decibel range;
 
-    soft_gate(q::decibel thresh, q::decibel range)
+    soft_gate(q::decibel thresh, q::decibel rng)
         : threshold{thresh}
-        , range_db{as_float(range)}
+        , range{rng}
     {}
 
     q::decibel operator()(q::decibel env) const {
-        auto diff = as_float(env) - as_float(threshold);
-        if (diff > 0) return 0_dB;
-        auto atten = std::max(diff, -range_db);
-        return q::decibel{atten};
+        if (env >= threshold) return 0_dB;
+        auto atten = env - threshold;
+        return std::max(atten, -range);
     }
 };
 ```
