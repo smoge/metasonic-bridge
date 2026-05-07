@@ -7,10 +7,18 @@
 -- |
 -- Module      : Main
 -- Description : Demonstration of the MetaSonic compilation pipeline
+--               and realtime audio output
 --
 -- Exercises the full pipeline from source graph construction
--- through to C++ execution, printing intermediate
--- representations at each stage.
+-- through lowering, region formation, dense compilation, and
+-- finally q_io / PortAudio realtime playback from the C++
+-- runtime.
+--
+-- Earlier versions of this demo ended by calling
+-- @c_rt_graph_process@ a few times and printing block output.
+-- That was useful for smoke testing, but it was not an audio
+-- backend. The runtime now owns a realtime engine, so the demo
+-- should actually play the compiled graph.
 --
 -- See Note [Example graphs] for what the three test cases
 -- are designed to exercise.
@@ -21,8 +29,7 @@
 module Main where
 
 import           Control.DeepSeq   (force)
-import           Control.Exception (evaluate)
-import           Foreign.C.Types   (CInt)
+import           Control.Exception (evaluate, finally)
 
 import           MetaSonic.Compile
 import           MetaSonic.FFI
@@ -99,6 +106,36 @@ fanOutGraph = runSynth $ do
   out 0 g1
   out 1 g2
 
+{- Note [Demo audio settings]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The C++ runtime pre-allocates per-node buffers to the graph's
+@maxFrames@ size. For the realtime path, that value also serves
+as the stream block size requested from q_io.
+
+We choose a moderate block size here because this is a demo,
+not a latency benchmark. 256 frames is usually a reasonable
+compromise between stability and responsiveness.
+
+The demo requests two output channels explicitly. That makes
+stereo devices the default happy path:
+
+  * graphs with one Out bus are duplicated to both channels by
+    the C++ callback;
+  * graphs with two Out buses map naturally to left and right.
+
+If you want the runtime to infer channel count from the graph,
+pass 0 to startAudio instead.
+-}
+
+demoMaxFrames :: Int
+demoMaxFrames = 256
+
+demoOutputChannels :: Int
+demoOutputChannels = 2
+
+audioReadyTimeoutMs :: Int
+audioReadyTimeoutMs = 1000
+
 {- Note [Pipeline runner stages]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 runPipeline takes a source graph through four stages, printing
@@ -117,10 +154,13 @@ the result of each to make the staged architecture visible:
     Replaces NodeID with NodeIndex; erases symbolic identity.
     See Note [Dense lowering] in MetaSonic.Compile.
 
-  Stage 4 — C++ execution (loadRuntimeGraph + rt_graph_process)
-    Transfers the dense graph across the FFI boundary and
-    processes three audio blocks.
-    See Note [FFI boundary design] in MetaSonic.FFI.
+  Stage 4 — C++ realtime execution
+    Transfers the dense graph across the FFI boundary,
+    starts the q_io / PortAudio audio engine, waits for the
+    first callback, then lets the graph play until the user
+    presses Enter.
+    See Note [FFI boundary design] and Note [Realtime audio
+    lifecycle] in MetaSonic.FFI.
 
 Each stage's output is force-evaluated before printing to
 ensure that any errors surface at the correct stage rather
@@ -161,15 +201,27 @@ runPipeline label graph = do
           putStrLn "\n  Runtime nodes (dense):"
           mapM_ printRTNode (rgNodes rg')
 
-          -- Stage 4: C++ execution.
+          -- Stage 4: C++ realtime execution.
           -- See Note [FFI boundary design] in MetaSonic.FFI.
-          withRTGraph 16 64 $ \rt -> do
+          withRTGraph (length (rgNodes rg')) demoMaxFrames $ \rt -> do
             loadRuntimeGraph rt rg'
-            putStrLn "\n  Processing 3 blocks in C++..."
-            mapM_ (\n -> do
-              putStrLn $ "  Block " ++ show n
-              c_rt_graph_process rt 64
-              ) [1 :: Int .. 3]
+            putStrLn "\n  Starting realtime audio..."
+            startRC <- startAudio rt demoOutputChannels (-1)
+            if startRC /= 0
+              then
+                putStrLn $ "  Audio start failed with status " ++ show startRC
+              else
+                flip finally (stopAudio rt) $ do
+                  ready <- waitAudioStarted rt audioReadyTimeoutMs
+                  if ready
+                    then do
+                      putStrLn "  Audio running. Press Enter to stop this example."
+                      _ <- getLine
+                      pure ()
+                    else
+                      putStrLn $
+                        "  Audio stream opened, but the callback did not report "
+                        ++ "ready within " ++ show audioReadyTimeoutMs ++ " ms."
 
   putStrLn ""
 
@@ -199,6 +251,8 @@ printRTNode n =
 
 main :: IO ()
 main = do
+  putStrLn "MetaSonic realtime demo"
+  putStrLn "Each example will compile, start audio, and wait for Enter."
   runPipeline "Simple (SinOsc → Out)"              simpleGraph
   runPipeline "Chain (SinOsc → Gain → Out)"        chainGraph
   runPipeline "Fan-out (SinOsc → 2×Gain → 2×Out)" fanOutGraph

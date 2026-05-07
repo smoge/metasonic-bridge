@@ -1,85 +1,28 @@
-// ================================================================
-// rt_graph.cpp — runtime
-// ================================================================
-//
-// The current runtime model is intentionally minimal. A compiled graph is
-// transferred to C++ through a small C ABI, nodes are stored in a contiguous
-// vector, and processing traverses the vector in storage order.
-//
-// This file is the C++ side of MetaSonic. It receives a fully compiled graph
-// from the Haskell compiler (MetaSonic.FFI) and executes it. It performs:
-//
-//   - no symbolic lookup
-//   - no dependency resolution
-//   - no scheduling
-//   - no allocation on the audio path
-//
-// These are not missing features. They are the visible consequence of the
-// compilation principle: if the Haskell side has already validated the graph,
-// established execution order, resolved all symbolic identities into dense
-// indices, and transferred the result through the FFI, then the runtime's only
-// job is to iterate and compute.
-//
-// This prototype should not be misunderstood as 'merely a simple graph
-// evaluator.' Its simplicity is structural. It demonstrates that a dense
-// runtime can remain almost trivial if symbolic work is discharged before the
-// FFI boundary.
-//
-// The runtime currently implements three node kinds: SinOsc, Out, and Gain.
-// Each is a self-contained process function that reads inputs by dense index,
-// writes to a pre-allocated output buffer, and maintains whatever state the
-// node requires. Adding a new node kind requires:
-//
-//   1. A NodeKind enum value here
-//   2. A configure_node case here
-//   3. A process_* function here
-//   4. A dispatch case in rt_graph_process here
-//   5. A kindTag case in MetaSonic.Types (Haskell)
-//   6. A UGen constructor in MetaSonic.Source (Haskell)
-//   7. Lowering cases in MetaSonic.IR (Haskell)
-//
-// NOTE: When kernel fusion is implemented, this list will change: the compiler
-// will generate composite kernels that do not correspond to a single predefined
-// node kind, and the runtime will execute fused regions rather than individual
-// nodes.
-//
-// NOTE: The dispatch loop in rt_graph_process will remain structurally
-// identical — it will still iterate over a dense array in storage order — but
-// the meaning of "unit" will change from "one node" to "one compiled region."
-
 #include "rt_graph.h"
 
+#include <q_io/audio_device.hpp>
+#include <q_io/audio_stream.hpp>
+
+#include <portaudio.h>
+
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <numbers>
 #include <span>
+#include <thread>
 #include <vector>
+
+namespace q = cycfi::q;
+
+struct RTGraph;
 
 namespace {
 
-// ----------------------------------------------------------------
-// Constants
-// ----------------------------------------------------------------
-
-constexpr float kSampleRate = 48000.0f;
-
-// ----------------------------------------------------------------
-// Dense index types
-//
-// NodeID, NodeIndex, PortIndex, and ControlIndex are represented as distinct
-// newtypes, preserving nominal distinctions between otherwise integer-like
-// identifiers.
-//
-// The Haskell side defines these as newtypes in MetaSonic.Types. The C++ side
-// mirrors those types with separate structs. The two languages agree on what
-// each integer means — by convention, not by a shared type definition, but the
-// convention is enforced by identical nominal wrapping on both sides.
-//
-// After dense lowering (MetaSonic.Compile.compileRuntimeGraph), the only
-// identifiers that cross the FFI boundary are these positional indices. No
-// symbolic NodeID survives.
-// ----------------------------------------------------------------
+constexpr float kDefaultSampleRate = 48000.0f;
 
 struct NodeIndex {
   int value = -1;
@@ -113,43 +56,11 @@ struct ControlIndex {
   return static_cast<std::size_t>(x.value);
 }
 
-// ----------------------------------------------------------------
-// Node classification
-//
-// Each enum value corresponds to a kindTag value in MetaSonic.Types. The
-// integer tags are the wire format of the C ABI — the only place where the two
-// languages must agree numerically.
-//
-//   Haskell (MetaSonic.Types)     C++ (rt_graph.cpp)
-//   ─────────────────────────     ──────────────────
-//   kindTag KSinOsc = 1          SinOsc = 1
-//   kindTag KOut    = 2          Out    = 2
-//   kindTag KGain   = 3          Gain   = 3
-//
-// Adding a new node kind means adding a value here and a corresponding kindTag
-// case in Haskell. The two must stay in sync manually; there is no shared
-// header.
-//
-// Future improvement could generate one side from the other automatically.
-// ----------------------------------------------------------------
-
 enum class NodeKind : int {
   SinOsc = 1,
   Out = 2,
   Gain = 3,
 };
-
-// ----------------------------------------------------------------
-// Input references
-//
-// An InputRef is the C++ analog of RuntimeInput (RFrom) in MetaSonic.Compile.
-// It records which node and port to read from. The 'connected' flag
-// distinguishes a wired input from an unwired one; unwired inputs fall back to
-// the node's control value.
-//
-// All references are dense indices into the node vector. No symbolic lookup
-// occurs at resolve time.
-// ----------------------------------------------------------------
 
 struct InputRef {
   NodeIndex src_node{};
@@ -157,39 +68,10 @@ struct InputRef {
   bool connected = false;
 };
 
-// ----------------------------------------------------------------
-// Per-node state
-//
-// SinOscState holds the phase accumulator for a sine oscillator. State persists
-// across audio blocks — this is the runtime-side expression of the
-// documentation observation that a signal is not merely "a stream of numbers"
-// but may carry temporal state.
-//
-// Stateless nodes (Out, Gain) require no per-node state beyond their output
-// buffer. This distinction matters for future region formation: stateful nodes
-// constrain fusion because their state creates loop-carried dependencies, while
-// stateless nodes can be freely fused or reordered within a region.
-// ----------------------------------------------------------------
-
 struct SinOscState {
   float phase = 0.0f;
   bool phase_initialized = false;
 };
-
-// ----------------------------------------------------------------
-// NodeRuntime: the runtime representation of a single node
-//
-// This is what the dense array actually stores. Each entry owns its control
-// values, input references, output buffers, and any node-specific state.
-//
-// The runtime should not need to know whether a unit arose from one primitive,
-// a fused chain, a vector loop, or a cached shared region. It should execute
-// dense units and maintain associated state.
-//
-// Currently, each NodeRuntime corresponds to one IR node (one NodeIR in
-// MetaSonic.IR). After fusion, a single NodeRuntime (or its successor type) may
-// correspond to an entire compiled region.
-// ----------------------------------------------------------------
 
 struct NodeRuntime {
   NodeKind kind = NodeKind::Out;
@@ -198,13 +80,6 @@ struct NodeRuntime {
   std::vector<std::vector<float>> outputs;
   SinOscState sinosc{};
 };
-
-// ----------------------------------------------------------------
-// Buffer access helpers
-//
-// output_span returns a view into a node's output buffer, sized to exactly
-// nframes. This avoids copies and keeps the process functions zero-allocation.
-// ----------------------------------------------------------------
 
 [[nodiscard]] static std::span<float>
 output_span(NodeRuntime &node, PortIndex port, int nframes) noexcept {
@@ -217,25 +92,6 @@ output_span(const NodeRuntime &node, PortIndex port, int nframes) noexcept {
   return {node.outputs[to_size(port)].data(),
           static_cast<std::size_t>(nframes)};
 }
-
-// ----------------------------------------------------------------
-// Input resolution
-//
-// resolve_input follows an InputRef to the source node's output buffer. It
-// returns an empty span if the input is not connected or if any index is out of
-// range.
-//
-// This is the runtime-side expression of the compiled connection: where the
-// Haskell side wrote RFrom (NodeIndex 0) (PortIndex 0) and MetaSonic.FFI
-// translated that into a rt_graph_connect call, this function chases the
-// resulting InputRef at process time.
-//
-// The function performs bounds checking defensively, but under correct
-// compilation none of these checks should ever fail — the Haskell compiler has
-// already validated referential integrity
-// (MetaSonic.Validate.checkDependencies) and produced dense indices within
-// range (MetaSonic.Compile.compileRuntimeGraph).
-// ----------------------------------------------------------------
 
 [[nodiscard]] static std::span<const float>
 resolve_input(const std::vector<NodeRuntime> &nodes, const NodeRuntime &dst,
@@ -272,24 +128,6 @@ resolve_input(const std::vector<NodeRuntime> &nodes, const NodeRuntime &dst,
   return output_span(src, ref.src_port, nframes);
 }
 
-// ----------------------------------------------------------------
-// Node configuration
-//
-// configure_node sets up a NodeRuntime for a given kind: control slots, input
-// refs, and output buffers. This is called once during graph loading (from
-// rt_graph_add_node), never during audio processing.
-//
-// The configuration reflects the node's interface contract:
-//
-//   SinOsc: 2 controls [freq, phase], 2 inputs, 1 output
-//   Out:    1 control  [bus],          1 input,  1 output
-//   Gain:   1 control  [amount],       2 inputs, 1 output
-//
-// Output buffers are pre-allocated to max_frames. This guarantees that the
-// audio processing loop performs no allocation — one of the runtime invariants
-// listed in ARCHITECTURE.md: no allocation inside DSP loop
-// ----------------------------------------------------------------
-
 static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
   node.kind = kind;
   node.controls.clear();
@@ -311,7 +149,7 @@ static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
     break;
 
   case NodeKind::Gain:
-    node.controls.resize(1, 1.0f); // [gain_amount] default = unity gain
+    node.controls.resize(1, 1.0f); // [gain_amount]
     node.input_refs.resize(2);     // [signal_in, gain_in]
     node.outputs.resize(1);
     break;
@@ -322,194 +160,29 @@ static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
   }
 }
 
-// ================================================================
-// Process functions
-//
-// Each process function implements one DSP kernel. The pattern is the same for
-// every node kind:
-//
-//   1. Get a writable span of the output buffer
-//   2. Resolve input connections (may return empty span)
-//   3. Read the effective parameter: connected input
-//      (block-latched at sample 0) or fallback control
-//   4. Compute nframes output samples
-//
-// The current prototype implements a simple block- latched discipline: incoming
-// modulation signals override controls using the first sample of the block.
-//
-// This is visible in every process function as the pattern:
-//   const float x = !input.empty() ? input[0] : node.controls[N];
-//
-// Block-latching is a prototype constraint, not an architectural one. When
-// kernel fusion compiles tightly coupled nodes into a single sample loop,
-// modulation edges can be resolved per-sample within the fused region, yielding
-// the "sample semantics locally" layer of the timing model described (see
-// docs).
-//
-// ================================================================
+struct GraphAudioStream : q::audio_stream {
+  GraphAudioStream(RTGraph &graph, q::audio_device const &device,
+                   std::size_t output_channels);
 
-// ----------------------------------------------------------------
-// SinOsc: sine oscillator
-//
-// Sample-rate, stateful. The phase accumulator persists across blocks in
-// SinOscState. Frequency and initial phase can be overridden by connected
-// inputs at block rate.
-//
-// On the Haskell side, SinOsc is constructed by the sinOsc combinator in
-// MetaSonic.Source, lowered to KSinOsc in MetaSonic.IR, and transferred as
-// kindTag 1 through MetaSonic.FFI.
-// ----------------------------------------------------------------
+  void process(out_channels const &out) override;
+  bool wait_started(std::chrono::milliseconds timeout) noexcept;
 
-static void process_sinosc(std::vector<NodeRuntime> &nodes,
-                           std::size_t node_idx, int nframes) noexcept {
-  NodeRuntime &node = nodes[node_idx];
-  auto out = output_span(node, PortIndex{0}, nframes);
-  const auto freq_in = resolve_input(nodes, node, PortIndex{0}, nframes);
-  const auto phase_in = resolve_input(nodes, node, PortIndex{1}, nframes);
-
-  // Block-latched parameter resolution:
-  //
-  // if an audio-rate input is connected, use its first sample as the value for
-  // the entire block. Otherwise, use the control value set at graph load time.
-
-  const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
-  const float ph0 = !phase_in.empty() ? phase_in[0] : node.controls[1];
-
-  if (!node.sinosc.phase_initialized) {
-    node.sinosc.phase = ph0;
-    node.sinosc.phase_initialized = true;
-  }
-
-  constexpr float kTwoPi = 2.0f * std::numbers::pi_v<float>;
-  const float inc = freq / kSampleRate;
-
-  for (int i = 0; i < nframes; ++i) {
-    const std::size_t fi = static_cast<std::size_t>(i);
-    out[fi] = std::sin(kTwoPi * node.sinosc.phase);
-    node.sinosc.phase += inc;
-    if (node.sinosc.phase >= 1.0f) {
-      node.sinosc.phase -= std::floor(node.sinosc.phase);
-    }
-  }
-}
-
-// ----------------------------------------------------------------
-// Out: output bus writer
-//
-// Sample-rate, stateless. Copies the input signal to its output buffer, or
-// writes silence if no input is connected.
-//
-// When buses become real shared resources, Out will carry a BusWrite effect
-// (Eff = BusWrite bus) on the Haskell side, and the effect analysis pass will
-// generate implicit dependency edges between Out nodes and any In nodes that
-// read from the same bus. Currently, Out is marked Pure (inferEff in
-// MetaSonic.IR returns [Pure]), because the bus is not yet a shared resource —
-// it is simply the last node's output buffer, printed for diagnostic purposes.
-// ----------------------------------------------------------------
-
-static void process_out(std::vector<NodeRuntime> &nodes, std::size_t node_idx,
-                        int nframes) noexcept {
-  NodeRuntime &node = nodes[node_idx];
-  auto out = output_span(node, PortIndex{0}, nframes);
-  const auto in = resolve_input(nodes, node, PortIndex{0}, nframes);
-
-  if (in.empty()) {
-    std::fill(out.begin(), out.end(), 0.0f);
-    return;
-  }
-
-  std::copy_n(in.begin(), static_cast<std::size_t>(nframes), out.begin());
-}
-
-// ----------------------------------------------------------------
-// Gain: stateless multiply
-//
-// out[i] = signal_in[i] * gain
-//
-// Sample-rate, stateless. The gain factor comes from input
-// port 1 if connected (block-latched at sample 0), otherwise
-// from control slot 0 (default: 1.0, unity gain).
-//
-// Kernel fusion is often explained as many nodes become one loop. In MetaSonic,
-// fusion should be formalized as a semantics-preserving rewrite over the
-// normalized region graph.
-//
-// Gain is the canonical fusion target. A chain like SinOsc → Gain → Out (the
-// chainGraph example in Main.hs) forms a single region in
-// MetaSonic.Compile.formRegions because all three nodes are SampleRate with a
-// linear dependency chain. A future fusion pass would compile this region into
-// a single sample loop:
-//
-//   for (int i = 0; i < nframes; ++i)
-//     out[i] = sin(2π * phase) * gain;
-//     phase += freq / sr;
-//
-// eliminating the intermediate buffer between the oscillator and the multiply.
-// This is the "fewer intermediate buffers, lower memory traffic, improved
-// locality" benefit.
-//
-// Gain is also stateless, which means it imposes no loop-carried dependency on
-// fusion (unlike a filter with delay state). The documentation notes that "a
-// region should be factored into vector-friendly loops to expose SIMD or to
-// separate stateful recurrences from embarrassingly parallel arithmetic." Gain
-// is the embarrassingly parallel case.
-// ----------------------------------------------------------------
-
-static void process_gain(std::vector<NodeRuntime> &nodes, std::size_t node_idx,
-                         int nframes) noexcept {
-  NodeRuntime &node = nodes[node_idx];
-  auto out = output_span(node, PortIndex{0}, nframes);
-  const auto sig_in = resolve_input(nodes, node, PortIndex{0}, nframes);
-  const auto gain_in = resolve_input(nodes, node, PortIndex{1}, nframes);
-
-  // Block-latched gain value
-  const float g = !gain_in.empty() ? gain_in[0] : node.controls[0];
-
-  if (sig_in.empty()) {
-    std::fill(out.begin(), out.end(), 0.0f);
-    return;
-  }
-
-  for (int i = 0; i < nframes; ++i) {
-    const std::size_t fi = static_cast<std::size_t>(i);
-    out[fi] = sig_in[fi] * g;
-  }
-}
+  RTGraph &graph;
+  std::atomic<bool> started{false};
+};
 
 } // namespace
-
-// ===============================================================
-// RTGraph: the top-level runtime handle
-//
-// This is the opaque struct that Haskell holds behind a Ptr RTGraph. It owns
-// all runtime state: the node vector, the capacity hint, and the maximum block
-// size.
-//
-// The Haskell side manages the lifetime through bracket- style allocation in
-// MetaSonic.FFI.withRTGraph, which calls rt_graph_create on entry and
-// rt_graph_destroy on exit (even under exceptions).
-// ===============================================================
 
 struct RTGraph {
   int capacity = 0;
   int max_frames = 0;
+  float sample_rate = kDefaultSampleRate;
   std::vector<NodeRuntime> nodes;
+  std::vector<std::vector<float>> output_buses;
+  std::unique_ptr<GraphAudioStream> audio;
 };
 
-// ----------------------------------------------------------------
-// ensure_node_slot
-//
-// Resize the node vector so that a given index is valid. This allows nodes to
-// be added in any order, though the Haskell compiler always adds them in dense
-// ascending order (by construction in MetaSonic.FFI.loadRuntimeGraph, which
-// iterates rgNodes in execution order).
-//
-// Note: if the Haskell side were to send non-contiguous indices, this function
-// would silently create empty gaps — unconfigured NodeRuntime entries with
-// zero-sized buffers. The documentation claims dense indexing, but this
-// function does not enforce it. A future hardening pass could add a check that
-// indices arrive consecutively.
-// ----------------------------------------------------------------
+namespace {
 
 static void ensure_node_slot(RTGraph &g, NodeIndex node_index) {
   if (!valid(node_index)) {
@@ -522,42 +195,237 @@ static void ensure_node_slot(RTGraph &g, NodeIndex node_index) {
   }
 }
 
-// ===============================================================
-// C ABI
-//
-// The runtime exposes an FFI for graph creation, node addition, control
-// assignment, connection, and block processing.
-//
-// This is the minimal surface through which the Haskell compiler communicates
-// with the runtime. The protocol is:
-//
-//   1. rt_graph_create(capacity, max_frames)
-//   2. For each node in execution order:
-//      a. rt_graph_add_node(g, index, kind)
-//      b. rt_graph_set_control(g, index, slot, value)
-//         for each control
-//   3. For each connection:
-//      rt_graph_connect(g, src, src_port, dst, dst_port)
-//   4. Repeat:
-//      rt_graph_process(g, nframes)
-//   5. rt_graph_destroy(g)
-//
-// MetaSonic.FFI.loadRuntimeGraph implements steps 2–3.
-// MetaSonic.FFI.withRTGraph implements steps 1 and 5 via bracket.
-//
-// All functions return void (except create, which returns the handle). Errors
-// are reported to stderr. A future improvement would return error codes or use
-// a shared error buffer, so that the Haskell side can detect runtime failures
-// programmatically. For now, the documentation's claim that "failure belongs to
-// compilation" is upheld by construction: if the Haskell compiler produces a
-// valid RuntimeGraph, no error paths in this ABI should trigger.
-// ===============================================================
+static void ensure_output_bus_count(RTGraph &g, std::size_t count) {
+  if (g.output_buses.size() >= count) {
+    return;
+  }
+
+  const std::size_t old_size = g.output_buses.size();
+  g.output_buses.resize(count);
+  for (std::size_t i = old_size; i < count; ++i) {
+    g.output_buses[i].resize(static_cast<std::size_t>(g.max_frames), 0.0f);
+  }
+}
+
+static void clear_output_buses(RTGraph &g, int nframes) noexcept {
+  const std::size_t frames = static_cast<std::size_t>(nframes);
+  for (auto &bus : g.output_buses) {
+    std::fill_n(bus.begin(), frames, 0.0f);
+  }
+}
+
+static void process_sinosc(RTGraph &g, std::size_t node_idx,
+                           int nframes) noexcept {
+  NodeRuntime &node = g.nodes[node_idx];
+  auto out = output_span(node, PortIndex{0}, nframes);
+  const auto freq_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
+  const auto phase_in = resolve_input(g.nodes, node, PortIndex{1}, nframes);
+
+  const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
+  const float ph0 = !phase_in.empty() ? phase_in[0] : node.controls[1];
+
+  if (!node.sinosc.phase_initialized) {
+    node.sinosc.phase = ph0;
+    node.sinosc.phase_initialized = true;
+  }
+
+  constexpr float kTwoPi = 2.0f * std::numbers::pi_v<float>;
+  const float inc = freq / g.sample_rate;
+
+  for (int i = 0; i < nframes; ++i) {
+    const std::size_t fi = static_cast<std::size_t>(i);
+    out[fi] = std::sin(kTwoPi * node.sinosc.phase);
+    node.sinosc.phase += inc;
+    if (node.sinosc.phase >= 1.0f || node.sinosc.phase < 0.0f) {
+      node.sinosc.phase -= std::floor(node.sinosc.phase);
+    }
+  }
+}
+
+static void process_gain(RTGraph &g, std::size_t node_idx,
+                         int nframes) noexcept {
+  NodeRuntime &node = g.nodes[node_idx];
+  auto out = output_span(node, PortIndex{0}, nframes);
+  const auto sig_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
+  const auto gain_in = resolve_input(g.nodes, node, PortIndex{1}, nframes);
+
+  const float amount = !gain_in.empty() ? gain_in[0] : node.controls[0];
+
+  if (sig_in.empty()) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
+  }
+
+  for (int i = 0; i < nframes; ++i) {
+    const std::size_t fi = static_cast<std::size_t>(i);
+    out[fi] = sig_in[fi] * amount;
+  }
+}
+
+static void process_out(RTGraph &g, std::size_t node_idx,
+                        int nframes) noexcept {
+  NodeRuntime &node = g.nodes[node_idx];
+  auto out = output_span(node, PortIndex{0}, nframes);
+  const auto in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
+
+  if (in.empty()) {
+    std::fill(out.begin(), out.end(), 0.0f);
+  } else {
+    std::copy_n(in.begin(), static_cast<std::size_t>(nframes), out.begin());
+  }
+
+  const int bus = static_cast<int>(node.controls[0]);
+  if (bus < 0) {
+    return;
+  }
+
+  const std::size_t bus_index = static_cast<std::size_t>(bus);
+  if (bus_index >= g.output_buses.size()) {
+    return;
+  }
+
+  auto &dst = g.output_buses[bus_index];
+  for (int i = 0; i < nframes; ++i) {
+    const std::size_t fi = static_cast<std::size_t>(i);
+    dst[fi] += out[fi];
+  }
+}
+
+static void process_graph(RTGraph &g, int nframes) noexcept {
+  clear_output_buses(g, nframes);
+
+  for (std::size_t i = 0; i < g.nodes.size(); ++i) {
+    switch (g.nodes[i].kind) {
+    case NodeKind::SinOsc:
+      process_sinosc(g, i, nframes);
+      break;
+    case NodeKind::Out:
+      process_out(g, i, nframes);
+      break;
+    case NodeKind::Gain:
+      process_gain(g, i, nframes);
+      break;
+    }
+  }
+}
+
+GraphAudioStream::GraphAudioStream(RTGraph &graph_,
+                                   q::audio_device const &device,
+                                   std::size_t output_channels)
+    : q::audio_stream(device, 0, output_channels, device.default_sample_rate(),
+                      graph_.max_frames),
+      graph(graph_) {}
+
+void GraphAudioStream::process(out_channels const &out) {
+  started.store(true, std::memory_order_release);
+
+  const int nframes = static_cast<int>(out.frames.size());
+  process_graph(graph, nframes);
+
+  for (std::size_t ch = 0; ch < out.size(); ++ch) {
+    auto dst = out[ch];
+    std::fill(dst.begin(), dst.end(), 0.0f);
+
+    if (graph.output_buses.empty()) {
+      continue;
+    }
+
+    const std::size_t bus =
+        (graph.output_buses.size() == 1 && out.size() > 1) ? 0 : ch;
+
+    if (bus < graph.output_buses.size()) {
+      std::copy_n(graph.output_buses[bus].begin(),
+                  static_cast<std::size_t>(nframes), dst.begin());
+    }
+  }
+}
+
+bool GraphAudioStream::wait_started(
+    std::chrono::milliseconds timeout) noexcept {
+  if (timeout.count() < 0) {
+    while (!started.load(std::memory_order_acquire)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (started.load(std::memory_order_acquire)) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  return started.load(std::memory_order_acquire);
+}
+
+static void stop_audio_stream(RTGraph &g) {
+  if (!g.audio) {
+    return;
+  }
+
+  g.audio->stop();
+  g.audio.reset();
+}
+
+static std::unique_ptr<GraphAudioStream>
+open_audio_stream(RTGraph &g, int requested_output_channels,
+                  int requested_device_id) {
+  auto devices = q::audio_device::list();
+  if (devices.empty()) {
+    return {};
+  }
+
+  auto try_make =
+      [&](q::audio_device const &dev) -> std::unique_ptr<GraphAudioStream> {
+    if (static_cast<int>(dev.output_channels()) < requested_output_channels) {
+      return {};
+    }
+
+    auto stream = std::make_unique<GraphAudioStream>(
+        g, dev, static_cast<std::size_t>(requested_output_channels));
+
+    if (!stream->is_valid()) {
+      return {};
+    }
+
+    return stream;
+  };
+
+  if (requested_device_id >= 0) {
+    for (auto const &dev : devices) {
+      if (dev.id() == requested_device_id) {
+        return try_make(dev);
+      }
+    }
+    return {};
+  }
+
+  const PaDeviceIndex default_output_id = Pa_GetDefaultOutputDevice();
+  if (default_output_id != paNoDevice) {
+    for (auto const &dev : devices) {
+      if (dev.id() == default_output_id) {
+        if (auto stream = try_make(dev)) {
+          return stream;
+        }
+        break;
+      }
+    }
+  }
+
+  for (auto const &dev : devices) {
+    if (auto stream = try_make(dev)) {
+      return stream;
+    }
+  }
+
+  return {};
+}
+
+} // namespace
 
 extern "C" {
-
-// ---------------------------------------------------------------
-// Lifecycle: create, destroy, clear
-// ---------------------------------------------------------------
 
 RTGraph *rt_graph_create(int capacity, int max_frames) {
   auto *g = new RTGraph{};
@@ -569,31 +437,27 @@ RTGraph *rt_graph_create(int capacity, int max_frames) {
   return g;
 }
 
-void rt_graph_destroy(RTGraph *g) { delete g; }
+void rt_graph_destroy(RTGraph *g) {
+  if (!g) {
+    return;
+  }
+  stop_audio_stream(*g);
+  delete g;
+}
 
-// clear resets the graph for reloading without deallocating
-// the handle. Used by MetaSonic.FFI.loadRuntimeGraph before
-// adding the new graph's nodes.
 void rt_graph_clear(RTGraph *g) {
   if (!g) {
     return;
   }
+
+  stop_audio_stream(*g);
+  g->sample_rate = kDefaultSampleRate;
   g->nodes.clear();
+  g->output_buses.clear();
   if (g->capacity > 0) {
     g->nodes.reserve(static_cast<std::size_t>(g->capacity));
   }
 }
-
-// ----------------------------------------------------------------
-// Graph construction: add_node, set_control, connect
-//
-// These functions are called by MetaSonic.FFI.loadRuntimeGraph to reconstruct
-// the compiled graph on the C++ side. They are called once at load time, never
-// during audio processing.
-//
-// The node_kind integer is the wire format of NodeKind — the same value
-// produced by kindTag in MetaSonic.Types.
-// ----------------------------------------------------------------
 
 void rt_graph_add_node(RTGraph *g, int node_index, int node_kind) {
   if (!g) {
@@ -623,6 +487,10 @@ void rt_graph_add_node(RTGraph *g, int node_index, int node_kind) {
 
   ensure_node_slot(*g, idx);
   configure_node(g->nodes[to_size(idx)], kind, g->max_frames);
+
+  if (kind == NodeKind::Out) {
+    ensure_output_bus_count(*g, 1);
+  }
 }
 
 void rt_graph_set_control(RTGraph *g, int node_index, int control_index,
@@ -649,13 +517,13 @@ void rt_graph_set_control(RTGraph *g, int node_index, int control_index,
   }
 
   node.controls[cidx] = value;
+
+  if (node.kind == NodeKind::Out && cidx == 0 && value >= 0.0f) {
+    const auto bus = static_cast<std::size_t>(static_cast<int>(value));
+    ensure_output_bus_count(*g, bus + 1);
+  }
 }
 
-// connect wires one source output port to one destination input port. Both
-// indices are dense NodeIndex values — the same values produced by
-// compileRuntimeGraph in MetaSonic.Compile. The runtime does no symbolic
-// lookup; it stores the source index directly in the destination node's
-// InputRef.
 void rt_graph_connect(RTGraph *g, int src_index, int src_port, int dst_index,
                       int dst_port) {
   if (!g) {
@@ -686,32 +554,6 @@ void rt_graph_connect(RTGraph *g, int src_index, int src_port, int dst_index,
   dst_node.input_refs[dport] = InputRef{src, sp, true};
 }
 
-// ----------------------------------------------------------------
-// Audio processing
-//
-// This is exactly the kind of linearized traversal that SuperNova identifies as
-// efficient for fine-grained graphs in the sequential case. The crucial
-// difference is that MetaSonic treats this not as a convenient implementation
-// shortcut but as the desired target of compilation.
-//
-// The loop below is the entire runtime execution model: iterate over the dense
-// node array in storage order, dispatch on NodeKind, call the appropriate
-// process function. Storage order equals execution order because nodes were
-// added in topological order by loadRuntimeGraph, and the topological order was
-// computed by MetaSonic.Validate.topoSort.
-//
-// SuperNova explicitly notes that fine-grained graphs are not feasibly
-// scheduled by assigning each graph node to the scheduler individually." This
-// loop is the sequential alternative: no scheduler, no ready queue, no
-// synchronization. Just a for loop over a vector.
-//
-// When region-level parallel scheduling is implemented, the outer loop will
-// iterate over regions rather than individual nodes. Within each region, the
-// same sequential iteration applies. Between regions, a lightweight scheduler
-// dispatches independent regions to worker threads. The invariant must hold: no
-// runtime scheduling mechanism may compromise worst-case callback latency.
-// ----------------------------------------------------------------
-
 void rt_graph_process(RTGraph *g, int nframes) {
   if (!g) {
     return;
@@ -723,33 +565,59 @@ void rt_graph_process(RTGraph *g, int nframes) {
     return;
   }
 
-  // The execution loop: iterate in storage order, dispatch by kind. This is the
-  // "dense executable units under latency constraints" target.
-  for (std::size_t i = 0; i < g->nodes.size(); ++i) {
-    switch (g->nodes[i].kind) {
-    case NodeKind::SinOsc:
-      process_sinosc(g->nodes, i, nframes);
-      break;
-    case NodeKind::Out:
-      process_out(g->nodes, i, nframes);
-      break;
-    case NodeKind::Gain:
-      process_gain(g->nodes, i, nframes);
-      break;
-    }
+  if (g->output_buses.empty()) {
+    ensure_output_bus_count(*g, 1);
   }
 
-  // Diagnostic output: print the first 8 samples of the last node's output
-  // buffer. This is a prototype convenience, not part of the architecture. A
-  // real system would write to an audio device (via q_io / portaudio) or expose
-  // the buffer through a callback.
-  if (!g->nodes.empty() && !g->nodes.back().outputs.empty()) {
-    const auto out = output_span(g->nodes.back(), PortIndex{0}, nframes);
-    std::printf("First 8 output samples:\n");
-    for (int i = 0; i < 8 && i < static_cast<int>(out.size()); ++i) {
-      std::printf("%d: %.6f\n", i, out[static_cast<std::size_t>(i)]);
-    }
+  process_graph(*g, nframes);
+}
+
+int rt_graph_start_audio(RTGraph *g, int output_channels, int device_id) {
+  if (!g) {
+    return -100;
   }
+
+  if (g->audio) {
+    return 0;
+  }
+
+  if (output_channels <= 0) {
+    output_channels = std::max(1, static_cast<int>(g->output_buses.size()));
+  }
+
+  if (g->output_buses.empty()) {
+    ensure_output_bus_count(*g, 1);
+  }
+
+  auto stream = open_audio_stream(*g, output_channels, device_id);
+  if (!stream) {
+    std::fprintf(stderr,
+                 "Failed to open audio stream (device_id=%d, outputs=%d)\n",
+                 device_id, output_channels);
+    return -1;
+  }
+
+  g->sample_rate = static_cast<float>(stream->sampling_rate());
+  stream->start();
+  g->audio = std::move(stream);
+  return 0;
+}
+
+int rt_graph_wait_started(RTGraph *g, int timeout_ms) {
+  if (!g || !g->audio) {
+    return -100;
+  }
+
+  const bool ok = g->audio->wait_started(std::chrono::milliseconds(timeout_ms));
+  return ok ? 0 : -2;
+}
+
+void rt_graph_stop_audio(RTGraph *g) {
+  if (!g) {
+    return;
+  }
+
+  stop_audio_stream(*g);
 }
 
 } // extern "C"
