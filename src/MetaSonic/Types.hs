@@ -20,13 +20,11 @@ MetaSonic.Validate
   The gate between construction and compilation.
 
 MetaSonic.Bridge.IR
-  The first real compilation pass. This is where the source
-  vocabulary (UGen, Connection) is stripped and replaced with
-  the compiler's vocabulary (NodeIR, InputConn) plus semantic
-  annotations (Rate, Eff). lowerGraph ties together validation,
-  sorting, lowering, and rate checking in one function. This
-  is the module where the argument about surface syntax
-  vs semantic syntax becomes concrete.
+  First compilation pass. This is where the source vocabulary (UGen, Connection)
+  is stripped and replaced with the compiler's vocabulary (NodeIR, InputConn)
+  plus semantic annotations (Rate, Eff). lowerGraph ties together validation,
+  sorting, lowering, and rate checking in one function. This is the module where
+  the argument about surface syntax vs semantic syntax becomes concrete.
 
 MetaSonic.Bridge.Compile
   Read formRegions (region formation), then compileRuntimeGraph (the decisive
@@ -39,8 +37,7 @@ MetaSonic.Bridge.FFI
   dense RuntimeGraph and emits FFI calls. After reading this,
   you know exactly what crosses to C++ and in what form.
 
-Then cross to the C++ side: rt_graph.h (the ABI)
-followed by rt_graph.cpp (runtime implementation).
+
 -}
 
 -- |
@@ -152,41 +149,26 @@ newtype ControlIndex = ControlIndex Int
   deriving stock   (Eq, Ord, Show, Generic)
   deriving newtype (NFData)
 
--- | Classification of DSP nodes. Each constructor maps to a
--- process function on the C++ side.
---
--- See Note [Adding a new node kind].
 data NodeKind
   = KSinOsc
-    -- ^ Sine oscillator. Sample-rate, stateful (phase
-    -- accumulator persists across blocks).
   | KOut
-    -- ^ Output bus writer. Sample-rate, stateless
-    -- passthrough. Will carry BusWrite effects when buses
-    -- become real shared resources.
-    -- See Note [Resource effects].
   | KGain
-    -- ^ Multiply by scalar. Sample-rate, stateless. The
-    -- canonical fusion target: two Gain nodes in sequence
-    -- with no fan-out can be collapsed into a single
-    -- multiply. See Note [Region formation] in
-    -- MetaSonic.Compile.
   | KBiquad
-    -- ^ Biquad filter. Sample-rate, stateful (two delay
-    -- elements). Constrains fusion because its state creates
-    -- a loop-carried dependency.
+  | KSawOsc
+  | KNoiseGen
+  | KLPF
   deriving stock    (Eq, Show, Generic)
   deriving anyclass (NFData)
 
--- | Integer tag for the C ABI. Must agree with the NodeKind
--- enum in rt_graph.cpp.
---
--- See Note [Adding a new node kind].
+-- | Must agree with the NodeKind enum in rt_graph.cpp.
 kindTag :: NodeKind -> CInt
-kindTag KSinOsc = 1
-kindTag KOut    = 2
-kindTag KGain   = 3
-kindTag KBiquad = 4
+kindTag KSinOsc   = 1
+kindTag KOut      = 2
+kindTag KGain     = 3
+kindTag KBiquad   = 4
+kindTag KSawOsc   = 5
+kindTag KNoiseGen = 6
+kindTag KLPF      = 7
 
 {- Note [Rate discipline]
 ~~~~~~~~~~~~~~~~~~~~~~~~~

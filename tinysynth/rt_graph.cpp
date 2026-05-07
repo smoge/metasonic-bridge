@@ -3,21 +3,17 @@
 // Description : runtime DSP engine and realtime audio backend
 // ================================================================
 //
-// On the Haskell side, compilation ends at RuntimeGraph: a dense,
-// execution-ordered list of nodes whose inputs already refer to
-// concrete runtime indices. On the C++ side, this file turns that
-// dense structure into preallocated node state, block processors,
-// output buses, and realtime audio stream.
-//
-//   * Haskell is responsible for graph construction, validation,
-//     topological ordering, region analysis, and dense lowering.
-//
-//   * C++ is responsible for block execution, node-local state,
-//     buffer ownership, signal propagation, and audio-device I/O.
-//
+// On the Haskell side, compilation ends at RuntimeGraph. On the C++ side, this
+// file turns that dense structure into preallocated node state, block
+// processors, output buses, and realtime audio stream.
 
 #include "rt_graph.h"
 
+#include <q/fx/biquad.hpp>
+#include <q/support/phase.hpp>
+#include <q/synth/noise_gen.hpp>
+#include <q/synth/saw_osc.hpp>
+#include <q/synth/sin_osc.hpp>
 #include <q_io/audio_device.hpp>
 #include <q_io/audio_stream.hpp>
 
@@ -25,13 +21,15 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <memory>
-#include <numbers>
 #include <span>
 #include <thread>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace q = cycfi::q;
@@ -51,11 +49,10 @@ By the time control reaches this file, there is no symbolic lookup,
 no map from user-facing names to nodes, and no scheduling work left to
 perform.
 
-This matters for both simplicity and realtime safety.
+This matters for both simplicity and safety.
 
 The small wrapper structs below preserve nominal distinctions between
-node positions, port positions, and control slots, even though they are
-all represented as ints at the machine level.
+node positions, port positions, and control slots.
 */
 
 namespace {
@@ -80,15 +77,9 @@ struct ControlIndex {
   int value = -1;
 };
 
-[[nodiscard]] constexpr bool valid(NodeIndex x) noexcept {
-  return x.value >= 0;
-}
-[[nodiscard]] constexpr bool valid(PortIndex x) noexcept {
-  return x.value >= 0;
-}
-[[nodiscard]] constexpr bool valid(ControlIndex x) noexcept {
-  return x.value >= 0;
-}
+[[nodiscard]] constexpr bool valid(NodeIndex x) noexcept { return x.value >= 0; }
+[[nodiscard]] constexpr bool valid(PortIndex x) noexcept { return x.value >= 0; }
+[[nodiscard]] constexpr bool valid(ControlIndex x) noexcept { return x.value >= 0; }
 
 [[nodiscard]] constexpr std::size_t to_size(NodeIndex x) noexcept {
   return static_cast<std::size_t>(x.value);
@@ -102,23 +93,26 @@ struct ControlIndex {
 
 /* Note [Runtime node kind tags]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-NodeKind must stay aligned with the integer tags emitted by the Haskell
-compiler.
+NodeKind must align with the integer tags emitted by the compiler.
 
   Haskell (MetaSonic.Types.kindTag)    C++ (NodeKind)
   ---------------------------------    --------------
-  kindTag KSinOsc = 1                  SinOsc = 1
-  kindTag KOut    = 2                  Out    = 2
-  kindTag KGain   = 3                  Gain   = 3
+  kindTag KSinOsc   = 1                SinOsc   = 1
+  kindTag KOut      = 2                Out      = 2
+  kindTag KGain     = 3                Gain     = 3
+  kindTag KSawOsc   = 5                SawOsc   = 5
+  kindTag KNoiseGen = 6                NoiseGen = 6
+  kindTag KLPF      = 7                LPF      = 7
 
-The runtime does not perform any negotiation here.
-`rt_graph_add_node` can decode them directly.
 */
 
 enum class NodeKind : int {
   SinOsc = 1,
   Out = 2,
   Gain = 3,
+  SawOsc = 5,
+  NoiseGen = 6,
+  LPF = 7,
 };
 
 /* Note [Input references and control fallback]
@@ -146,13 +140,33 @@ struct InputRef {
   PortIndex src_port{};
 };
 
-// Stateful payload for SinOsc. The oscillator remembers phase across
-// blocks and across callback invocations until the graph is cleared or
-// destroyed.
-struct SinOscState {
-  float phase = 0.0f;
-  bool phase_initialized = false;
+// Shared oscillator phase state. q::phase_iterator owns the 1.31 fixed-point
+// accumulator and per-sample increment. Fixed-point phase wraps at 2pi with
+// uint32 overflow — no fmod, no conditional branch.
+//
+// *Osc oscillators differ only in waveshaping function, not in
+// phase-accumulation state, so all Osc nodes use OscState.
+struct OscState {
+  q::phase_iterator phase_iter;
 };
+
+struct NoiseGenState {
+  q::white_noise_gen noise;
+};
+
+// LPF holds a q::lowpass biquad and the last-applied freq/q so the filter is
+// _only_ reconfigured when a parameter changes (block-rate). last_freq/last_q
+// are initialised to -1 so the first process call reconfigures with the node's
+// controls.
+struct LPFState {
+  q::lowpass filter{q::frequency{1000.0}, kDefaultSampleRate, 0.707};
+  float last_freq = -1.0f;
+  float last_q = -1.0f;
+};
+
+// Stateless nodes use monostate: this keeps each runtime node from dealing
+// directly with every possible state object.
+using NodeState = std::variant<std::monostate, OscState, NoiseGenState, LPFState>;
 
 /* Note [NodeRuntime layout]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -177,28 +191,29 @@ struct NodeRuntime {
   std::vector<float> controls;
   std::vector<InputRef> input_refs;
   std::vector<std::vector<float>> outputs;
-  SinOscState sinosc{};
+  NodeState state{};
 };
 
 // View one output buffer as a span over the first nframes samples.
 [[nodiscard]] static std::span<float>
 output_span(NodeRuntime &node, PortIndex port, int nframes) noexcept {
-  return {node.outputs[to_size(port)].data(),
-          static_cast<std::size_t>(nframes)};
+  return {node.outputs[to_size(port)].data(), static_cast<std::size_t>(nframes)};
 }
 
 [[nodiscard]] static std::span<const float>
 output_span(const NodeRuntime &node, PortIndex port, int nframes) noexcept {
-  return {node.outputs[to_size(port)].data(),
-          static_cast<std::size_t>(nframes)};
+  return {node.outputs[to_size(port)].data(), static_cast<std::size_t>(nframes)};
 }
 
 // Resolve one connected input to the source node's output span.
 // An empty span means the input is unavailable and the caller should
 // fall back to the corresponding control value or silence.
-[[nodiscard]] static std::span<const float>
-resolve_input(const std::vector<NodeRuntime> &nodes, const NodeRuntime &dst,
-              PortIndex input_index, int nframes) noexcept {
+[[nodiscard]] static std::span<const float> resolve_input(
+    const std::vector<NodeRuntime> &nodes,
+    const NodeRuntime &dst,
+    PortIndex input_index,
+    int nframes
+) noexcept {
   if (!valid(input_index)) {
     return {};
   }
@@ -241,9 +256,8 @@ Two jobs:
      output count, and initial state
   2. preallocate every output buffer to max_frames
 
-This separation is important. The architectural invariant is that the
-DSP loop performs no allocation. All buffer growth happens here while
-loading or reloading the graph.
+The architectural invariant is that the DSP loop performs no allocation. All
+buffer growth happens here while loading or reloading the graph.
 */
 
 static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
@@ -251,13 +265,14 @@ static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
   node.controls.clear();
   node.input_refs.clear();
   node.outputs.clear();
-  node.sinosc = {};
+  node.state = std::monostate{};
 
   switch (kind) {
   case NodeKind::SinOsc:
     node.controls.resize(2, 0.0f); // [freq, initial_phase]
     node.input_refs.resize(2);     // [freq_in, phase_in]
     node.outputs.resize(1);
+    node.state = OscState{};
     break;
 
   case NodeKind::Out:
@@ -270,6 +285,26 @@ static void configure_node(NodeRuntime &node, NodeKind kind, int max_frames) {
     node.controls.resize(1, 1.0f); // [gain_amount]
     node.input_refs.resize(2);     // [signal_in, gain_in]
     node.outputs.resize(1);
+    break;
+
+  case NodeKind::SawOsc:
+    node.controls.resize(2, 0.0f); // [freq, initial_phase]
+    node.input_refs.resize(2);     // [freq_in, phase_in]
+    node.outputs.resize(1);
+    node.state = OscState{};
+    break;
+
+  case NodeKind::NoiseGen:
+    // No controls, no inputs — pure source
+    node.outputs.resize(1);
+    node.state = NoiseGenState{};
+    break;
+
+  case NodeKind::LPF:
+    node.controls = {1000.0f, 0.707f}; // [cutoff_freq, q]
+    node.input_refs.resize(3);         // [signal_in, freq_in, q_in]
+    node.outputs.resize(1);
+    node.state = LPFState{};
     break;
   }
 
@@ -297,8 +332,9 @@ pull wrapper around the already-constructed RTGraph.
 */
 
 struct GraphAudioStream : q::audio_stream {
-  GraphAudioStream(RTGraph &graph, q::audio_device const &device,
-                   std::size_t output_channels);
+  GraphAudioStream(
+      RTGraph &graph, q::audio_device const &device, std::size_t output_channels
+  );
 
   void process(out_channels const &out) override;
   bool wait_started(std::chrono::milliseconds timeout) noexcept;
@@ -385,45 +421,168 @@ static void clear_output_buses(RTGraph &g, int nframes) noexcept {
   }
 }
 
+void set_osc_initial_phase(NodeRuntime &node, float value) noexcept {
+  auto *osc = std::get_if<OscState>(&node.state);
+  assert(osc && "oscillator node has non-oscillator state");
+  if (!osc) {
+    return;
+  }
+
+  const float frac = std::isfinite(value) ? value - std::floor(value) : 0.0F;
+
+  // Note [Phase setting semantics]
+  // q::phase_iterator has no public API for setting _phase independently of _step.
+  // phase_iterator::set(freq, sps) updates only _step.
+  // operator=(phase) also sets _step, not _phase — a counterintuitive trap.
+  //
+  // Let's keep this direct field access here so a Q API change breaks in one place...
+  osc->phase_iter._phase = q::frac_to_phase(static_cast<double>(frac));
+}
+
 /* Note [SinOsc processing semantics]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-SinOsc currently implements a simple stateful oscillator with block-
-latched control inputs.
+SinOsc uses q::phase_iterator for phase accumulation and q::sin as
+sample-computing function.
 
-  * frequency input: if connected, sample 0 overrides control 0
-  * phase input: if connected, sample 0 overrides control 1 only while
-    the oscillator is being initialized
+  * q::phase uses a 1.31 fixed-point format (uint32). The uint32 range maps to
+    one cycle (0–2pi), overflow wraps phase naturally with no fmod or
+    conditional branch.
 
-After initialization, phase advances continuously across blocks. This
-keeps the implementation aligned with the original prototype semantics:
-phase is an initial condition, not an audio-rate modulation target.
+  * phase_iterator::set updates the per-sample increment (dt), the accumulated
+    phase is preserved. Calling it every block implements block-rate
+    frequency control without phase discontinuities.
+
+  * q::sin is a lookup-table sine that carries no mutable state.
 */
 
-static void process_sinosc(RTGraph &g, std::size_t node_idx,
-                           int nframes) noexcept {
+static void process_sinosc(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
   NodeRuntime &node = g.nodes[node_idx];
   auto out = output_span(node, PortIndex{0}, nframes);
   const auto freq_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
-  const auto phase_in = resolve_input(g.nodes, node, PortIndex{1}, nframes);
 
   const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
-  const float ph0 = !phase_in.empty() ? phase_in[0] : node.controls[1];
-
-  if (!node.sinosc.phase_initialized) {
-    node.sinosc.phase = ph0;
-    node.sinosc.phase_initialized = true;
+  auto *osc = std::get_if<OscState>(&node.state);
+  assert(osc && "SinOsc node has non-oscillator state");
+  if (!osc) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
   }
 
-  constexpr float kTwoPi = 2.0f * std::numbers::pi_v<float>;
-  const float inc = freq / g.sample_rate;
+  // update per-sample increment, preserving accumulated phase across blocks
+  osc->phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
+
+  for (int i = 0; i < nframes; ++i) {
+    out[static_cast<std::size_t>(i)] = q::sin(osc->phase_iter++);
+  }
+}
+
+/* Note [SawOsc processing semantics]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+SawOsc is just like SinOsc: q::phase_iterator accumulates phase across blocks
+and q::saw computes.
+
+In the case of SawOsc, it uses poly-BLEP antialiasing. The phase_iterator
+supplies both the current phase and the per-sample step (dt) for BLEP correction
+term.
+
+Frequency is block-latched for now. TODO: implement frequency control at sample
+rate.
+*/
+
+static void process_sawosc(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
+  NodeRuntime &node = g.nodes[node_idx];
+  auto out = output_span(node, PortIndex{0}, nframes);
+  const auto freq_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
+
+  const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
+  auto *osc = std::get_if<OscState>(&node.state);
+  assert(osc && "SawOsc node has non-oscillator state");
+  if (!osc) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
+  }
+  osc->phase_iter.set(q::frequency{static_cast<double>(freq)}, g.sample_rate);
+
+  for (int i = 0; i < nframes; ++i) {
+    out[static_cast<std::size_t>(i)] = q::saw(osc->phase_iter++);
+  }
+}
+
+/* Note [NoiseGen processing semantics]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+NoiseGen uses q::white_noise_gen, a fast xorshift PRNG, values uniformly in [-1,
+1]. The generator state persists across blocks, so the noise stream is
+continuous.
+
+No controls or inputs.
+
+*/
+
+static void process_noisegen(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
+  NodeRuntime &node = g.nodes[node_idx];
+  auto out = output_span(node, PortIndex{0}, nframes);
+  auto *noisegen = std::get_if<NoiseGenState>(&node.state);
+  assert(noisegen && "NoiseGen node has non-noisegen state");
+  if (!noisegen) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
+  }
+
+  for (int i = 0; i < nframes; ++i) {
+    out[static_cast<std::size_t>(i)] = noisegen->noise();
+  }
+}
+
+/* Note [LPF processing semantics]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+LPF uses q::lowpass, a biquad IIR low-pass filter (Audio-EQ Cookbook).
+
+Cutoff frequency and q are block-latched: read once per block from an input port
+if connected, otherwise from the control defaults. The filter should be
+reconfigured via biquad::config when parameters change, but reconfiguration updates
+the five coefficients without resetting the delay state, so there is no
+discontinuity beyond the filter's own transient.
+
+If the signal input is unconnected, output is silence.
+*/
+
+static void process_lpf(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
+  NodeRuntime &node = g.nodes[node_idx];
+  auto out = output_span(node, PortIndex{0}, nframes);
+  const auto sig_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
+
+  if (sig_in.empty()) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
+  }
+
+  const auto freq_in = resolve_input(g.nodes, node, PortIndex{1}, nframes);
+  const auto q_in = resolve_input(g.nodes, node, PortIndex{2}, nframes);
+
+  const float freq = !freq_in.empty() ? freq_in[0] : node.controls[0];
+  const float q_val = !q_in.empty() ? q_in[0] : node.controls[1];
+
+  auto *lpf = std::get_if<LPFState>(&node.state);
+  assert(lpf && "LPF node has non-LPF state");
+  if (!lpf) {
+    std::fill(out.begin(), out.end(), 0.0f);
+    return;
+  }
+
+  if (freq != lpf->last_freq || q_val != lpf->last_q) {
+    lpf->filter.config(
+        q::frequency{static_cast<double>(freq)}, g.sample_rate, static_cast<double>(q_val)
+    );
+    lpf->last_freq = freq;
+    lpf->last_q = q_val;
+  }
 
   for (int i = 0; i < nframes; ++i) {
     const std::size_t fi = static_cast<std::size_t>(i);
-    out[fi] = std::sin(kTwoPi * node.sinosc.phase);
-    node.sinosc.phase += inc;
-    if (node.sinosc.phase >= 1.0f || node.sinosc.phase < 0.0f) {
-      node.sinosc.phase -= std::floor(node.sinosc.phase);
-    }
+    out[fi] = lpf->filter(sig_in[fi]);
   }
 }
 
@@ -440,8 +599,7 @@ the dataflow shape already supports future sample-accurate gain without
 changing the ABI!
 */
 
-static void process_gain(RTGraph &g, std::size_t node_idx,
-                         int nframes) noexcept {
+static void process_gain(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
   NodeRuntime &node = g.nodes[node_idx];
   auto out = output_span(node, PortIndex{0}, nframes);
   const auto sig_in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
@@ -463,7 +621,7 @@ static void process_gain(RTGraph &g, std::size_t node_idx,
 /* Note [Out node processing — direct bus accumulation]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Out is a pure sink: it accumulates its input signal into a shared
-output bus selected by control slot 0.
+output bus.
 
 Previously, process_out performed two passes over the frame data:
 
@@ -485,8 +643,7 @@ will read from the bus, NOT from the Out output port. The bus is the
 shared memory abstraction (just like SC3's Out.ar & In.ar
 design). Keeping Out as a pure accumulator avoids ambiguity.
 */
-static void process_out(RTGraph &g, std::size_t node_idx,
-                        int nframes) noexcept {
+static void process_out(RTGraph &g, std::size_t node_idx, int nframes) noexcept {
   NodeRuntime &node = g.nodes[node_idx];
   const auto in = resolve_input(g.nodes, node, PortIndex{0}, nframes);
   if (in.empty())
@@ -502,16 +659,14 @@ static void process_out(RTGraph &g, std::size_t node_idx,
   }
 }
 
-/* Note [Execution order invariant]
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/* Note [Execution order]
+~~~~~~~~~~~~~~~~~~~~~~~~~
 The runtime processes nodes in storage order.
 
-This is correct because `metasonic` adds nodes in dense execution order,
-which itself comes from the validated topological order computed on the
-Haskell side. There is therefore no separate scheduler in this file.
-The dense node vector is already the "schedule".
-
-That simplicity is by design. Thus the name "tinysynth".
+This is correct because the compiler adds nodes in dense execution order, which
+itself comes from the validated topological order computed on the Haskell side.
+There is therefore no separate scheduler in this file. The dense node vector is
+already the "schedule". That simplicity is by design. Thus the name "tinysynth".
 */
 
 static void process_graph(RTGraph &g, int nframes) noexcept {
@@ -528,15 +683,28 @@ static void process_graph(RTGraph &g, int nframes) noexcept {
     case NodeKind::Gain:
       process_gain(g, i, nframes);
       break;
+    case NodeKind::SawOsc:
+      process_sawosc(g, i, nframes);
+      break;
+    case NodeKind::NoiseGen:
+      process_noisegen(g, i, nframes);
+      break;
+    case NodeKind::LPF:
+      process_lpf(g, i, nframes);
+      break;
+    default:
+      assert(false && "unhandled NodeKind in process_graph");
+      break;
     }
   }
 }
 
-GraphAudioStream::GraphAudioStream(RTGraph &graph_,
-                                   q::audio_device const &device,
-                                   std::size_t output_channels)
-    : q::audio_stream(device, 0, output_channels, device.default_sample_rate(),
-                      graph_.max_frames),
+GraphAudioStream::GraphAudioStream(
+    RTGraph &graph_, q::audio_device const &device, std::size_t output_channels
+)
+    : q::audio_stream(
+          device, 0, output_channels, device.default_sample_rate(), graph_.max_frames
+      ),
       graph(graph_) {}
 
 /* Note [Realtime channel mapping]
@@ -557,8 +725,7 @@ void GraphAudioStream::process(out_channels const &out) {
 
   // To be defensive, clamp nframes to max_frames here. (PA spec says the
   // callback can receive different sizes, but we can't handle that.)
-  const int nframes =
-      std::min(static_cast<int>(out.frames.size()), graph.max_frames);
+  const int nframes = std::min(static_cast<int>(out.frames.size()), graph.max_frames);
   process_graph(graph, nframes);
 
   for (std::size_t ch = 0; ch < out.size(); ++ch) {
@@ -569,12 +736,12 @@ void GraphAudioStream::process(out_channels const &out) {
       continue;
     }
 
-    const std::size_t bus =
-        (graph.output_buses.size() == 1 && out.size() > 1) ? 0 : ch;
+    const std::size_t bus = (graph.output_buses.size() == 1 && out.size() > 1) ? 0 : ch;
 
     if (bus < graph.output_buses.size()) {
-      std::copy_n(graph.output_buses[bus].begin(),
-                  static_cast<std::size_t>(nframes), dst.begin());
+      std::copy_n(
+          graph.output_buses[bus].begin(), static_cast<std::size_t>(nframes), dst.begin()
+      );
     }
   }
 }
@@ -589,13 +756,11 @@ language coordination. Instead it performs the smallest possible signal:
 
   started.store(true)
 
-IMPORTANT:
 A separate, non-realtime waiting path polls that flag. This keeps the
 callback thread free of locks, I/O, and Haskell RTS interaction.
 */
 
-bool GraphAudioStream::wait_started(
-    std::chrono::milliseconds timeout) noexcept {
+bool GraphAudioStream::wait_started(std::chrono::milliseconds timeout) noexcept {
   if (timeout.count() < 0) {
     while (!started.load(std::memory_order_acquire)) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -640,21 +805,20 @@ C ABI entry point.
 */
 
 static std::unique_ptr<GraphAudioStream>
-open_audio_stream(RTGraph &g, int requested_output_channels,
-                  int requested_device_id) {
+open_audio_stream(RTGraph &g, int requested_output_channels, int requested_device_id) {
   auto devices = q::audio_device::list();
   if (devices.empty()) {
     return {};
   }
 
-  auto try_make =
-      [&](q::audio_device const &dev) -> std::unique_ptr<GraphAudioStream> {
+  auto try_make = [&](q::audio_device const &dev) -> std::unique_ptr<GraphAudioStream> {
     if (static_cast<int>(dev.output_channels()) < requested_output_channels) {
       return {};
     }
 
     auto stream = std::make_unique<GraphAudioStream>(
-        g, dev, static_cast<std::size_t>(requested_output_channels));
+        g, dev, static_cast<std::size_t>(requested_output_channels)
+    );
 
     if (!stream->is_valid()) {
       return {};
@@ -725,11 +889,9 @@ void rt_graph_destroy(RTGraph *g) {
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 rt_graph_clear is the graph-reload entry point.
 
-It stops active audio, resets the sample rate to the default placeholder
-value, removes all nodes and output buses, and preserves the graph handle
-for reuse. This matches the Haskell loading protocol, where a single
-RTGraph handle may be repeatedly cleared and repopulated by
-loadRuntimeGraph.
+It stops active audio, resets the sample rate to the default placeholder value,
+removes all nodes and output buses, and preserves the graph handle for reuse.
+
 */
 
 void rt_graph_clear(RTGraph *g) {
@@ -763,6 +925,15 @@ void rt_graph_add_node(RTGraph *g, int node_index, int node_kind) {
   case 3:
     kind = NodeKind::Gain;
     break;
+  case 5:
+    kind = NodeKind::SawOsc;
+    break;
+  case 6:
+    kind = NodeKind::NoiseGen;
+    break;
+  case 7:
+    kind = NodeKind::LPF;
+    break;
   default:
     std::fprintf(stderr, "Unknown node kind: %d\n", node_kind);
     return;
@@ -783,8 +954,7 @@ void rt_graph_add_node(RTGraph *g, int node_index, int node_kind) {
 }
 
 // Set one control slot on one node.
-void rt_graph_set_control(RTGraph *g, int node_index, int control_index,
-                          float value) {
+void rt_graph_set_control(RTGraph *g, int node_index, int control_index, float value) {
   if (!g) {
     return;
   }
@@ -814,11 +984,16 @@ void rt_graph_set_control(RTGraph *g, int node_index, int control_index,
     const auto bus = static_cast<std::size_t>(static_cast<int>(value));
     ensure_output_bus_count(*g, bus + 1);
   }
+
+  if (cidx == 1 && (node.kind == NodeKind::SinOsc || node.kind == NodeKind::SawOsc)) {
+    set_osc_initial_phase(node, value);
+  }
 }
 
 // Connect one source output port to one destination input port.
-void rt_graph_connect(RTGraph *g, int src_index, int src_port, int dst_index,
-                      int dst_port) {
+void rt_graph_connect(
+    RTGraph *g, int src_index, int src_port, int dst_index, int dst_port
+) {
   if (!g) {
     return;
   }
@@ -854,8 +1029,7 @@ void rt_graph_process(RTGraph *g, int nframes) {
   }
 
   if (nframes < 0 || nframes > g->max_frames) {
-    std::fprintf(stderr, "Invalid nframes: %d (max_frames=%d)\n", nframes,
-                 g->max_frames);
+    std::fprintf(stderr, "Invalid nframes: %d (max_frames=%d)\n", nframes, g->max_frames);
     return;
   }
 
@@ -898,9 +1072,12 @@ int rt_graph_start_audio(RTGraph *g, int output_channels, int device_id) {
 
   auto stream = open_audio_stream(*g, output_channels, device_id);
   if (!stream) {
-    std::fprintf(stderr,
-                 "Failed to open audio stream (device_id=%d, outputs=%d)\n",
-                 device_id, output_channels);
+    std::fprintf(
+        stderr,
+        "Failed to open audio stream (device_id=%d, outputs=%d)\n",
+        device_id,
+        output_channels
+    );
     return -1;
   }
 

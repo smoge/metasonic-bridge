@@ -10,12 +10,6 @@
 --
 -- The first compilation pass: lower source graphs into an annotated IR carrying
 -- rate and effect metadata.
---
--- See Note [Lowering as compilation] for how lowerGraph ties together
--- validation, sorting, annotation, and rate checking.
---
--- See Note [Surface syntax vs semantic syntax] in MetaSonic.Source for how this
--- module relates to the source DSL.
 
 module MetaSonic.Bridge.IR
   ( -- * Symbolic IR types
@@ -171,9 +165,14 @@ This is a key extension.
 -- See Note [Rate inference vs rate propagation].
 inferRate :: UGen -> Rate
 inferRate = \case
-  SinOsc _ _ -> SampleRate
-  Out _ _    -> SampleRate
-  Gain _ _   -> SampleRate
+  SinOsc _ _   -> SampleRate
+  SawOsc _ _   -> SampleRate
+  NoiseGen     -> SampleRate
+  LPF _ _ _    -> SampleRate
+  Out _ _      -> SampleRate
+  Gain _ _     -> SampleRate
+  BusOut _ _   -> SampleRate
+  BusIn _      -> SampleRate
 
 -- | Infer the effect set of a UGen.
 --
@@ -185,9 +184,14 @@ inferRate = \case
 -- See Note [Resource effects] in MetaSonic.Types.
 inferEff :: UGen -> [Eff]
 inferEff = \case
-  SinOsc _ _ -> [Pure]
-  Out _ _    -> [Pure]
-  Gain _ _   -> [Pure]
+  SinOsc _ _   -> [Pure]
+  SawOsc _ _   -> [Pure]
+  NoiseGen     -> [Pure]
+  LPF _ _ _    -> [Pure]
+  Out _ _      -> [Pure]
+  Gain _ _     -> [Pure]
+  BusOut _ _   -> [Pure]
+  BusIn _      -> [Pure]
 
 {- Note [Rate edge validation]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -360,18 +364,28 @@ lowerNode nodeMap nid =
 -- See Note [Adding a new node kind] in MetaSonic.Types.
 inferKind :: UGen -> NodeKind
 inferKind = \case
-  SinOsc _ _ -> KSinOsc
-  Out _ _    -> KOut
-  Gain _ _   -> KGain
+  SinOsc _ _   -> KSinOsc
+  SawOsc _ _   -> KSawOsc
+  NoiseGen     -> KNoiseGen
+  LPF _ _ _    -> KLPF
+  Out _ _      -> KOut
+  Gain _ _     -> KGain
+  BusOut _ _   -> error "inferKind: BusOut not fully implemented yet"
+  BusIn _      -> error "inferKind: BusIn not fully implemented yet"
 
 -- | Lower UGen connections to IR InputConns.
 --
 -- See Note [IR vocabulary stripping].
 lowerInputs :: UGen -> [InputConn]
 lowerInputs = \case
-  SinOsc freq phase -> [lowerConn freq, lowerConn phase]
-  Out _ sig         -> [lowerConn sig]
-  Gain sig amt      -> [lowerConn sig, lowerConn amt]
+  SinOsc freq phase    -> [lowerConn freq, lowerConn phase]
+  SawOsc freq phase    -> [lowerConn freq, lowerConn phase]
+  NoiseGen             -> []
+  LPF sig freq q       -> [lowerConn sig, lowerConn freq, lowerConn q]
+  Out _ sig            -> [lowerConn sig]
+  Gain sig amt         -> [lowerConn sig, lowerConn amt]
+  BusOut _ sig         -> [lowerConn sig]
+  BusIn _              -> []
 
 lowerConn :: Connection -> InputConn
 lowerConn (Audio nid port) = FromNode nid port
@@ -383,9 +397,14 @@ lowerConn (Param x)        = Literal x
 -- See Note [Per-node lowering].
 extractControls :: UGen -> [Float]
 extractControls = \case
-  SinOsc freq phase -> [connDefault freq, connDefault phase]
-  Out bus _         -> [fromIntegral bus]
-  Gain _ amt        -> [connDefault amt]
+  SinOsc freq phase  -> [connDefault freq, connDefault phase]
+  SawOsc freq phase  -> [connDefault freq, connDefault phase]
+  NoiseGen           -> []
+  LPF _ freq q       -> [connDefault freq, connDefault q]
+  Out bus _          -> [fromIntegral bus]
+  Gain _ amt         -> [connDefault amt]
+  BusOut bus _       -> [fromIntegral bus]
+  BusIn bus          -> [fromIntegral bus]
   where
     connDefault (Param x)   = x
     connDefault (Audio _ _) = 0.0
